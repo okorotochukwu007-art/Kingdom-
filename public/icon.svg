@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#09090B"/>
+  <circle cx="256" cy="256" r="190" stroke="url(#goldGradient)" stroke-width="12" opacity="0.4"/>
+  <circle cx="256" cy="256" r="150" stroke="url(#goldGradient)" stroke-width="4" opacity="0.2"/>
+  <!-- Sanctuary Radiant Glow -->
+  <radialGradient id="glow" cx="50%" cy="45%" r="45%">
+    <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.25"/>
+    <stop offset="100%" stop-color="#09090B" stop-opacity="0"/>
+  </radialGradient>
+  <circle cx="256" cy="230" r="140" fill="url(#glow)"/>
+  <!-- Gold Cross & Plus Motif -->
+  <path d="M236 120H276V216H372V256H276V392H236V256H140V216H236V120Z" fill="url(#goldGradient)" filter="drop-shadow(0px 8px 16px rgba(245, 158, 11, 0.35))"/>
+  <defs>
+    <linearGradient id="goldGradient" x1="140" y1="120" x2="372" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDE68A"/>
+      <stop offset="0.45" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#D97706"/>
+    </linearGradient>
+  </defs>
+</svg>

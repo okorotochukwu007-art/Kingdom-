@@ -1,0 +1,6 @@
+{
+  "name": "KINGDOM+ — Christian Streaming & Community Platform",
+  "description": "A Nigerian-first Christian video streaming, worship, learning, and real-time social community platform powered by YouTube Data API v3, Supabase, and Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=5.0" />
+    <title>KINGDOM+ — Christian Streaming & Community Platform</title>
+    <meta name="description" content="A Nigerian-first Christian video streaming, worship, learning, and real-time social community platform powered by YouTube Data API v3, Supabase, and Gemini AI." />
+    
+    <!-- Mobile & PWA Optimization (Android Chrome & iOS Safari) -->
+    <meta name="theme-color" content="#09090B" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="KINGDOM+" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    
+    <meta property="og:title" content="KINGDOM+ — Christian Streaming & Community Platform" />
+    <meta property="og:description" content="A Nigerian-first Christian video streaming, worship, learning, and real-time social community platform powered by YouTube Data API v3, Supabase, and Gemini AI." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    
+    <!-- Suppress third-party browser extension errors (MetaMask, Web3 wallets, adblockers) -->
+    <script>
+      (function() {
+        function isExt(e) {
+          if (!e) return false;
+          var str = (e.message || (e.reason && e.reason.message) || e.filename || '' + e).toLowerCase();
+          var stack = ((e.error && e.error.stack) || (e.reason && e.reason.stack) || '').toLowerCase();
+          return str.indexOf('metamask') !== -1 ||
+                 str.indexOf('ethereum') !== -1 ||
+                 str.indexOf('chrome-extension://') !== -1 ||
+                 str.indexOf('moz-extension://') !== -1 ||
+                 stack.indexOf('chrome-extension://') !== -1;
+        }
+        window.addEventListener('error', function(ev) {
+          if (isExt(ev.error) || isExt(ev)) {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+        window.addEventListener('unhandledrejection', function(ev) {
+          if (isExt(ev.reason)) {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
+  </head>
+  <body class="bg-[#09090B] text-[#FAFAFA] antialiased selection:bg-amber-500/30 selection:text-amber-200 min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
