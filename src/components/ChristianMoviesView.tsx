@@ -176,6 +176,17 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     );
   }, [allMovieVideos]);
 
+  const filterLocalMovies = (genreTerm: string, queryTerm: string) => {
+    const terms = `${genreTerm} ${queryTerm}`
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((t) => t.length > 2 && t !== 'christian' && t !== 'movie' && t !== 'movies');
+    return allMovieVideos.filter((v) => {
+      const hay = `${v.title} ${v.channel_title} ${v.description} ${v.primary_category_name} ${v.subcategory_label || ''}`.toLowerCase();
+      return terms.length === 0 || terms.some((t) => hay.includes(t));
+    });
+  };
+
   const handleSelectGenre = async (genreId: string) => {
     setSelectedGenreId(genreId);
     const genreObj = CHRISTIAN_MOVIE_GENRES.find((g) => g.id === genreId);
@@ -193,12 +204,17 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
           searchQuery
         )}`
       );
-      const data = await res.json();
-      if (Array.isArray(data.movies)) {
-        setDiscoveredMovies(data.movies);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data.movies)) {
+          setDiscoveredMovies(data.movies);
+          return;
+        }
       }
-    } catch (err) {
-      console.error('Failed to discover movies:', err);
+      setDiscoveredMovies(filterLocalMovies(genreObj.queryTerm, searchQuery));
+    } catch {
+      setDiscoveredMovies(filterLocalMovies(genreObj.queryTerm, searchQuery));
     } finally {
       setIsSearchingDiscovered(false);
     }
@@ -210,19 +226,25 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
 
     setIsSearchingDiscovered(true);
     const activeGenre = CHRISTIAN_MOVIE_GENRES.find((g) => g.id === selectedGenreId);
+    const genreTerm = activeGenre && activeGenre.id !== 'all' ? activeGenre.queryTerm : '';
     setDiscoveredSearchLabel(searchQuery.trim());
     try {
       const res = await fetch(
-        `/api/discovery/movies?genre=${encodeURIComponent(
-          activeGenre && activeGenre.id !== 'all' ? activeGenre.queryTerm : ''
-        )}&query=${encodeURIComponent(searchQuery.trim())}`
+        `/api/discovery/movies?genre=${encodeURIComponent(genreTerm)}&query=${encodeURIComponent(
+          searchQuery.trim()
+        )}`
       );
-      const data = await res.json();
-      if (Array.isArray(data.movies)) {
-        setDiscoveredMovies(data.movies);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data.movies)) {
+          setDiscoveredMovies(data.movies);
+          return;
+        }
       }
-    } catch (err) {
-      console.error('Failed to search external movies:', err);
+      setDiscoveredMovies(filterLocalMovies(genreTerm, searchQuery.trim()));
+    } catch {
+      setDiscoveredMovies(filterLocalMovies(genreTerm, searchQuery.trim()));
     } finally {
       setIsSearchingDiscovered(false);
     }

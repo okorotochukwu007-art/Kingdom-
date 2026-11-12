@@ -327,11 +327,14 @@ export const MinisterSearchBar: React.FC<MinisterSearchBarProps> = ({
     setQuery(name);
     try {
       const res = await fetch(`/api/discovery/minister?name=${encodeURIComponent(name)}`);
-      const data = await res.json();
-      if (data.minister) {
-        setDiscoveredResult(data.minister);
-        if (onDiscoveredMinister) {
-          onDiscoveredMinister(data.minister);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.minister) {
+          setDiscoveredResult(data.minister);
+          if (onDiscoveredMinister) {
+            onDiscoveredMinister(data.minister);
+          }
         }
       }
     } catch (err) {
@@ -1171,9 +1174,12 @@ export const ExploreMinistersView: React.FC<ExploreMinistersViewProps> = ({
     setIsSearchingWorldwide(true);
     try {
       const res = await fetch(`/api/discovery/minister?name=${encodeURIComponent(name)}`);
-      const data = await res.json();
-      if (data.minister) {
-        setSelectedDiscoveredMinister(data.minister);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.minister) {
+          setSelectedDiscoveredMinister(data.minister);
+        }
       }
     } catch (err) {
       console.error('Failed to discover minister:', err);

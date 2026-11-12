@@ -82,6 +82,7 @@ interface IntelligentDiscoveryModalProps {
   onClose: () => void;
   initialQuery?: string;
   initialScope?: DiscoveryFilterScope;
+  allVideos?: KingdomVideo[];
   savedVideoIds: string[];
   onSelectVideo: (video: KingdomVideo) => void;
   onToggleSave: (videoId: string, e: React.MouseEvent) => void;
@@ -132,6 +133,7 @@ export const IntelligentDiscoveryModal: React.FC<IntelligentDiscoveryModalProps>
   onClose,
   initialQuery = '',
   initialScope = 'all',
+  allVideos = [],
   savedVideoIds,
   onSelectVideo,
   onToggleSave,
@@ -175,19 +177,85 @@ export const IntelligentDiscoveryModal: React.FC<IntelligentDiscoveryModalProps>
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
+  const buildLocalDiscoveryFallback = (
+    searchQuery: string,
+    scope: DiscoveryFilterScope
+  ): IntelligentDiscoveryData => {
+    const scopeCategoryMap: Record<DiscoveryFilterScope, string[]> = {
+      all: [],
+      movies: ['christian-movies', 'christian-drama', 'christian-movies-nigeria', 'christian-movies-hollywood', 'christian-animation', 'bible-films'],
+      ministers: ['sermons-teachings', 'conferences-events', 'prayer-spiritual-warfare'],
+      sermons: ['sermons-teachings', 'conferences-events'],
+      worship: ['worship-praise', 'gospel-music'],
+      prayer: ['prayer-spiritual-warfare'],
+      marriage: ['marriage-relationships'],
+      teachings: ['christian-living', 'sermons-teachings'],
+    };
+
+    const allowedCats = scopeCategoryMap[scope] || [];
+    const scopedVideos =
+      allowedCats.length > 0
+        ? allVideos.filter(
+            (v) =>
+              allowedCats.includes(v.primary_category_slug) ||
+              v.secondary_category_slugs.some((s) => allowedCats.includes(s))
+          )
+        : allVideos;
+
+    const clean = searchQuery.trim().toLowerCase();
+    const tokens = clean.split(/\s+/).filter((t) => t.length > 1);
+
+    const matched = clean
+      ? scopedVideos
+          .filter((v) => {
+            const haystack = `${v.title} ${v.channel_title} ${v.artist_name || ''} ${
+              v.primary_category_name
+            } ${v.subcategory_label || ''} ${v.description}`.toLowerCase();
+            return haystack.includes(clean) || tokens.every((tok) => haystack.includes(tok));
+          })
+          .sort((a, b) => (b.trending_score || 0) - (a.trending_score || 0))
+      : [...scopedVideos].sort((a, b) => (b.trending_score || 0) - (a.trending_score || 0));
+
+    const curatedVideos = matched.slice(0, 18);
+    return {
+      query: searchQuery,
+      scope,
+      intent: {
+        originalQuery: searchQuery,
+        isBroad: !clean,
+        detectedType: scope,
+        detectedCategorySlug: allowedCats[0] || 'all',
+        biblicalThemes: clean ? [searchQuery] : ['Faith', 'Worship', 'Prayer'],
+        intentSummary: clean
+          ? `Showing ${curatedVideos.length} verified KINGDOM+ broadcasts matching "${searchQuery}".`
+          : 'Curated sermons, worship, prayer altars, and faith cinema from the KINGDOM+ catalog.',
+        optimizedYouTubeQueries: [],
+        recommendedSubtopics: ['Deep Worship', 'Midnight Prayer', 'Faith Teaching', 'Christian Cinema'],
+      },
+      curatedVideos,
+      discoveredVideos: [],
+      discoveredMinister: null,
+      isRecommendation: !clean,
+      totalMatches: curatedVideos.length,
+    };
+  };
+
   const performSearch = async (searchQuery: string, scope: DiscoveryFilterScope) => {
     setLoading(true);
     setErrorMessage(null);
     try {
       const url = `/api/discovery/search?q=${encodeURIComponent(searchQuery)}&scope=${encodeURIComponent(scope)}`;
       const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error('Failed to retrieve discovery results.');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const json: IntelligentDiscoveryData = await res.json();
+        setData(json);
+        return;
       }
-      const json: IntelligentDiscoveryData = await res.json();
-      setData(json);
-    } catch (err) {
-      setErrorMessage((err as Error).message || 'An error occurred while exploring content.');
+      // Cloudflare Pages static fallback when /api/discovery/search is not mounted
+      setData(buildLocalDiscoveryFallback(searchQuery, scope));
+    } catch {
+      setData(buildLocalDiscoveryFallback(searchQuery, scope));
     } finally {
       setLoading(false);
     }

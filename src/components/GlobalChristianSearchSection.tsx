@@ -109,7 +109,8 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
           activeScope
         )}`
       );
-      if (!res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
         setGlobalResults([]);
         return;
       }

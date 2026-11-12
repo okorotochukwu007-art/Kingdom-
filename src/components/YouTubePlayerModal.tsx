@@ -30,6 +30,7 @@ import {
   formatCompactNumber,
   formatDurationSeconds,
   formatRelativeDate,
+  getBrowserSupabaseClient,
 } from '../utils/formatters.ts';
 
 declare global {
@@ -58,6 +59,29 @@ interface YouTubePlayerModalProps {
   onOpenChannelWhileListening?: (channelId: string) => void;
 }
 
+const LOCAL_COMMENTS_PREFIX = 'kingdom_plus_comments_v1_';
+
+function loadLocalVideoComments(videoId: string): VideoComment[] {
+  try {
+    const raw = localStorage.getItem(`${LOCAL_COMMENTS_PREFIX}${videoId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {
+    // Ignore storage error
+  }
+  return [];
+}
+
+function saveLocalVideoComments(videoId: string, comments: VideoComment[]): void {
+  try {
+    localStorage.setItem(`${LOCAL_COMMENTS_PREFIX}${videoId}`, JSON.stringify(comments));
+  } catch {
+    // Ignore storage error
+  }
+}
+
 export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   video,
   allVideos,
@@ -77,12 +101,14 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   onOpenChannelWhileListening,
 }) => {
   const playerContainerRef = useRef<HTMLDivElement>(null);
+  const iframeElementRef = useRef<HTMLIFrameElement | null>(null);
   const fullscreenWrapperRef = useRef<HTMLDivElement>(null);
   const playerInstanceRef = useRef<any>(null);
   const progressTimerRef = useRef<number | null>(null);
 
   const [playerError, setPlayerError] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState<boolean>(true);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [hasStartedPlayback, setHasStartedPlayback] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(initialProgressSeconds || 0);
   const [duration, setDuration] = useState<number>(video.duration_seconds || 0);
@@ -91,6 +117,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   const [autoPlayNext, setAutoPlayNext] = useState<boolean>(true);
   const [isCompactMini, setIsCompactMini] = useState<boolean>(false);
   const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
+  const [streamRetryCount, setStreamRetryCount] = useState<number>(0);
 
   const [comments, setComments] = useState<VideoComment[]>([]);
   const [newComment, setNewComment] = useState('');
@@ -99,13 +126,17 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   const [submittingComment, setSubmittingComment] = useState(false);
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
 
-  const relatedVideos = allVideos
-    .filter(
+  const relatedVideos = React.useMemo(() => {
+    const primaryMatches = allVideos.filter(
       (v) =>
         v.id !== video.id &&
         (v.primary_category_slug === video.primary_category_slug || v.channel_id === video.channel_id)
-    )
-    .slice(0, 6);
+    );
+    if (primaryMatches.length >= 6) return primaryMatches.slice(0, 6);
+    const seenIds = new Set(primaryMatches.map((v) => v.id));
+    const extras = allVideos.filter((v) => v.id !== video.id && !seenIds.has(v.id));
+    return [...primaryMatches, ...extras].slice(0, 6);
+  }, [allVideos, video.id, video.primary_category_slug, video.channel_id]);
 
   const isLoopingRef = useRef(isLooping);
   isLoopingRef.current = isLooping;
@@ -113,6 +144,17 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   autoPlayNextRef.current = autoPlayNext;
   const nextVideoRef = useRef<KingdomVideo | undefined>(relatedVideos[0]);
   nextVideoRef.current = relatedVideos[0];
+
+  const sendIframeCommand = (func: string, args: unknown[] = []) => {
+    try {
+      iframeElementRef.current?.contentWindow?.postMessage(
+        JSON.stringify({ event: 'command', func, args }),
+        '*'
+      );
+    } catch {
+      // Ignore cross-origin postMessage errors
+    }
+  };
 
   useEffect(() => {
     const handleFsChange = () => {
@@ -122,108 +164,215 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
-  // Load comments for this video
+  // Load comments for this video (Server API first, Cloudflare localStorage + Supabase fallback)
   useEffect(() => {
     setPlayerError(null);
+    setIsPlaying(false);
+    setHasStartedPlayback(false);
     setCurrentTime(initialProgressSeconds || 0);
     setDuration(video.duration_seconds || 0);
-    fetch(`/api/videos/${video.id}/comments`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data.comments)) {
-          setComments(data.comments);
+
+    const loadComments = async () => {
+      const localComments = loadLocalVideoComments(video.id);
+      if (localComments.length > 0) {
+        setComments(localComments);
+      } else {
+        setComments([]);
+      }
+
+      try {
+        const res = await fetch(`/api/videos/${video.id}/comments`);
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (Array.isArray(data.comments)) {
+            setComments(data.comments);
+            saveLocalVideoComments(video.id, data.comments);
+            return;
+          }
         }
-      })
-      .catch(() => {});
+      } catch {
+        // Ignore network error on static hosting
+      }
+
+      try {
+        const sb = getBrowserSupabaseClient(
+          (window as any).__KINGDOM_SUPABASE_URL__ || null,
+          (window as any).__KINGDOM_SUPABASE_KEY__ || null
+        );
+        if (sb) {
+          const { data } = await sb
+            .from('video_comments')
+            .select('*')
+            .eq('video_id', video.id)
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false })
+            .limit(50);
+          if (Array.isArray(data) && data.length > 0) {
+            setComments(data as VideoComment[]);
+            saveLocalVideoComments(video.id, data as VideoComment[]);
+          }
+        }
+      } catch {
+        // Ignore if comments table uses strict UUID foreign key
+      }
+    };
+
+    loadComments();
   }, [video.id]);
 
-  // Initialize Native KINGDOM+ Media Stream Engine (with all external chrome disabled & masked)
+  // Listen for iframe postMessage telemetry as backup for YT API state/time updates
+  useEffect(() => {
+    const onMessage = (ev: MessageEvent) => {
+      if (typeof ev.data !== 'string' || !ev.origin.includes('youtube')) return;
+      try {
+        const payload = JSON.parse(ev.data);
+        const info = payload?.info;
+        if (!info || typeof info !== 'object') return;
+        if (typeof info.playerState === 'number') {
+          if (info.playerState === 1 || info.playerState === 3) {
+            setIsPlaying(true);
+            setHasStartedPlayback(true);
+          } else if (info.playerState === 2 || info.playerState === 0 || info.playerState === 5) {
+            setIsPlaying(false);
+          }
+        }
+        if (typeof info.currentTime === 'number' && !Number.isNaN(info.currentTime)) {
+          setCurrentTime(info.currentTime);
+        }
+        if (typeof info.duration === 'number' && info.duration > 0) {
+          setDuration(info.duration);
+        }
+      } catch {
+        // Ignore non-JSON frames
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  // Initialize Native KINGDOM+ Media Stream Engine with direct iframe mount + YT API binding
   useEffect(() => {
     let isMounted = true;
+    const container = playerContainerRef.current;
+    if (!container) return;
+
+    container.innerHTML = '';
+    iframeElementRef.current = null;
+
+    const startSec = initialProgressSeconds > 10 ? Math.floor(initialProgressSeconds) : 0;
+    const embedParams = new URLSearchParams({
+      autoplay: '1',
+      enablejsapi: '1',
+      controls: '0',
+      disablekb: '1',
+      fs: '0',
+      rel: '0',
+      modestbranding: '1',
+      iv_load_policy: '3',
+      playsinline: '1',
+      start: String(startSec),
+      origin: window.location.origin,
+      widget_referrer: window.location.origin,
+    });
+
+    const iframe = document.createElement('iframe');
+    iframe.id = `kp-stream-${video.youtube_video_id}-${streamRetryCount}`;
+    iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(
+      video.youtube_video_id
+    )}?${embedParams.toString()}`;
+    iframe.title = video.title;
+    iframe.className = 'w-full h-full border-0';
+    iframe.allow =
+      'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+    iframe.allowFullscreen = true;
+    iframe.setAttribute('playsinline', '1');
+    iframe.setAttribute('webkit-playsinline', '1');
+    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+
+    container.appendChild(iframe);
+    iframeElementRef.current = iframe;
 
     const initPlayer = () => {
-      if (!isMounted || !playerContainerRef.current || !window.YT || !window.YT.Player) return;
+      if (!isMounted || !iframeElementRef.current || !window.YT || !window.YT.Player) return;
 
       if (playerInstanceRef.current) {
         try {
           playerInstanceRef.current.destroy();
         } catch {}
+        playerInstanceRef.current = null;
       }
 
-      playerInstanceRef.current = new window.YT.Player(playerContainerRef.current, {
-        videoId: video.youtube_video_id,
-        width: '100%',
-        height: '100%',
-        playerVars: {
-          autoplay: 1,
-          controls: 0,
-          disablekb: 1,
-          fs: 0,
-          rel: 0,
-          modestbranding: 1,
-          iv_load_policy: 3,
-          playsinline: 1,
-           start: initialProgressSeconds > 10 ? Math.floor(initialProgressSeconds) : 0,
-          origin: window.location.origin,
-        },
-        events: {
-          onReady: (event: any) => {
-            if (!isMounted) return;
-            try {
-              const player = event.target;
-              const dur = player?.getDuration?.() || video.duration_seconds || 0;
-              if (dur > 0) setDuration(dur);
-              setIsMuted(Boolean(player?.isMuted?.()));
-            } catch {}
-
-            if (progressTimerRef.current) window.clearInterval(progressTimerRef.current);
-            progressTimerRef.current = window.setInterval(() => {
+      try {
+        playerInstanceRef.current = new window.YT.Player(iframeElementRef.current, {
+          events: {
+            onReady: (event: any) => {
+              if (!isMounted) return;
               try {
                 const player = event.target;
-                if (player && typeof player.getCurrentTime === 'function') {
-                  const cur = player.getCurrentTime();
-                  const dur = player.getDuration() || video.duration_seconds || 0;
-                  setCurrentTime(cur);
-                  if (dur > 0) setDuration(dur);
-                  if (cur > 3 && dur > 0) {
-                    onProgressUpdate(video.id, cur, dur);
-                  }
-                }
+                const dur = player?.getDuration?.() || video.duration_seconds || 0;
+                if (dur > 0) setDuration(dur);
+                setIsMuted(Boolean(player?.isMuted?.()));
+                player?.playVideo?.();
               } catch {}
-            }, 1000);
-          },
-          onStateChange: (event: any) => {
-            if (!isMounted) return;
-            const state = event?.data;
-            if (state === 1) {
-              setIsPlaying(true);
-            } else if (state === 2) {
-              setIsPlaying(false);
-            } else if (state === 0) {
-              setIsPlaying(false);
-              if (isLoopingRef.current && playerInstanceRef.current) {
+
+              if (progressTimerRef.current) window.clearInterval(progressTimerRef.current);
+              progressTimerRef.current = window.setInterval(() => {
                 try {
-                  playerInstanceRef.current.seekTo(0, true);
-                  playerInstanceRef.current.playVideo();
-                  setIsPlaying(true);
+                  const player = event.target;
+                  if (player && typeof player.getCurrentTime === 'function') {
+                    const cur = player.getCurrentTime();
+                    const dur = player.getDuration() || video.duration_seconds || 0;
+                    const pState = player.getPlayerState?.();
+                    if (pState === 1 || pState === 3) {
+                      setIsPlaying(true);
+                      setHasStartedPlayback(true);
+                    }
+                    setCurrentTime(cur);
+                    if (dur > 0) setDuration(dur);
+                    if (cur > 3 && dur > 0) {
+                      onProgressUpdate(video.id, cur, dur);
+                    }
+                  }
                 } catch {}
-              } else if (autoPlayNextRef.current && nextVideoRef.current) {
-                onSelectVideo(nextVideoRef.current);
+              }, 1000);
+            },
+            onStateChange: (event: any) => {
+              if (!isMounted) return;
+              const state = event?.data;
+              if (state === 1 || state === 3) {
+                setIsPlaying(true);
+                setHasStartedPlayback(true);
+              } else if (state === 2 || state === 5 || state === -1) {
+                setIsPlaying(false);
+              } else if (state === 0) {
+                setIsPlaying(false);
+                if (isLoopingRef.current && playerInstanceRef.current) {
+                  try {
+                    playerInstanceRef.current.seekTo(0, true);
+                    playerInstanceRef.current.playVideo();
+                    setIsPlaying(true);
+                  } catch {}
+                } else if (autoPlayNextRef.current && nextVideoRef.current) {
+                  onSelectVideo(nextVideoRef.current);
+                }
               }
-            }
+            },
+            onError: (event: any) => {
+              if (!isMounted) return;
+              const code = event?.data;
+              if (code === 100 || code === 101 || code === 150 || code === 153) {
+                setPlayerError(
+                  'This broadcast stream is currently unavailable. Try refreshing the stream or play the next broadcast below.'
+                );
+                onVideoUnavailable(video.id);
+              }
+            },
           },
-          onError: (event: any) => {
-            if (!isMounted) return;
-            const code = event?.data;
-            if (code === 100 || code === 101 || code === 150) {
-              setPlayerError(
-                'This broadcast stream is currently unavailable. Please select another message below.'
-              );
-              onVideoUnavailable(video.id);
-            }
-          },
-        },
-      });
+        });
+      } catch {
+        // Iframe still works via postMessage commands even if YT wrapper throws
+      }
     };
 
     if (window.YT && window.YT.Player) {
@@ -253,68 +402,94 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
         try {
           playerInstanceRef.current.destroy();
         } catch {}
+        playerInstanceRef.current = null;
       }
+      if (container) {
+        container.innerHTML = '';
+      }
+      iframeElementRef.current = null;
     };
-  }, [video.youtube_video_id, video.id]);
+  }, [video.youtube_video_id, video.id, streamRetryCount]);
 
   // Player Control Helpers
   const togglePlayPause = () => {
     const player = playerInstanceRef.current;
-    if (!player) return;
     try {
-      if (isPlaying) {
-        player.pauseVideo?.();
+      const state = typeof player?.getPlayerState === 'function' ? player.getPlayerState() : null;
+      const currentlyPlaying = state !== null ? state === 1 || state === 3 : isPlaying;
+      if (currentlyPlaying) {
+        player?.pauseVideo?.();
+        sendIframeCommand('pauseVideo');
         setIsPlaying(false);
       } else {
-        player.playVideo?.();
+        player?.playVideo?.();
+        sendIframeCommand('playVideo');
         setIsPlaying(true);
+        setHasStartedPlayback(true);
       }
-    } catch {}
+    } catch {
+      if (isPlaying) {
+        sendIframeCommand('pauseVideo');
+        setIsPlaying(false);
+      } else {
+        sendIframeCommand('playVideo');
+        setIsPlaying(true);
+        setHasStartedPlayback(true);
+      }
+    }
   };
 
   const toggleNativeFullscreen = async () => {
-    const el = fullscreenWrapperRef.current;
+    const el = fullscreenWrapperRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> }) | null;
     if (!el) return;
     try {
       if (!document.fullscreenElement) {
-        await el.requestFullscreen();
+        if (typeof el.requestFullscreen === 'function') {
+          await el.requestFullscreen();
+        } else if (typeof el.webkitRequestFullscreen === 'function') {
+          await el.webkitRequestFullscreen();
+        } else {
+          setIsNativeFullscreen((prev) => !prev);
+        }
       } else {
         await document.exitFullscreen();
       }
-    } catch {}
+    } catch {
+      setIsNativeFullscreen((prev) => !prev);
+    }
   };
 
   const skipBySeconds = (delta: number) => {
     const player = playerInstanceRef.current;
-    if (!player || typeof player.getCurrentTime !== 'function') return;
+    const baseCur = typeof player?.getCurrentTime === 'function' ? player.getCurrentTime() : currentTime;
+    const target = Math.max(0, Math.min(duration || baseCur + delta, baseCur + delta));
+    setCurrentTime(target);
     try {
-      const cur = player.getCurrentTime();
-      const target = Math.max(0, Math.min(duration || cur + delta, cur + delta));
-      player.seekTo(target, true);
-      setCurrentTime(target);
+      player?.seekTo?.(target, true);
     } catch {}
+    sendIframeCommand('seekTo', [target, true]);
   };
 
   const handleSeekBarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const target = Number(e.target.value);
     setCurrentTime(target);
     const player = playerInstanceRef.current;
-    if (player && typeof player.seekTo === 'function') {
-      try {
-        player.seekTo(target, true);
-      } catch {}
-    }
+    try {
+      player?.seekTo?.(target, true);
+    } catch {}
+    sendIframeCommand('seekTo', [target, true]);
   };
 
   const toggleMute = () => {
     const player = playerInstanceRef.current;
-    if (!player) return;
     try {
       if (isMuted) {
-        player.unMute?.();
+        player?.unMute?.();
+        sendIframeCommand('unMute');
         setIsMuted(false);
       } else {
-        player.mute?.();
+        player?.mute?.();
+        sendIframeCommand('mute');
         setIsMuted(true);
       }
     } catch {}
@@ -326,11 +501,10 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     const nextSpeed = speeds[nextIdx];
     setPlaybackSpeed(nextSpeed);
     const player = playerInstanceRef.current;
-    if (player && typeof player.setPlaybackRate === 'function') {
-      try {
-        player.setPlaybackRate(nextSpeed);
-      } catch {}
-    }
+    try {
+      player?.setPlaybackRate?.(nextSpeed);
+    } catch {}
+    sendIframeCommand('setPlaybackRate', [nextSpeed]);
   };
 
   const playNextRelated = () => {
@@ -360,15 +534,56 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
           parentCommentId,
         }),
       });
-      const data = await res.json();
-      if (res.ok && data.comment) {
-        setComments((prev) => [data.comment, ...prev]);
-        if (parentCommentId) {
-          setReplyText('');
-          setReplyingToId(null);
-        } else {
-          setNewComment('');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.comment) {
+          setComments((prev) => {
+            const next = [data.comment, ...prev];
+            saveLocalVideoComments(video.id, next);
+            return next;
+          });
+          if (parentCommentId) {
+            setReplyText('');
+            setReplyingToId(null);
+          } else {
+            setNewComment('');
+          }
+          return;
         }
+      }
+
+      // Cloudflare static fallback (local + Supabase cloud)
+      const localComment: VideoComment = {
+        id:
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        video_id: video.id,
+        user_id: currentUser.id,
+        user_full_name: currentUser.full_name,
+        user_username: currentUser.username,
+        user_avatar_url: currentUser.avatar_url || undefined,
+        user_role: currentUser.role,
+        parent_comment_id: parentCommentId || null,
+        content: text,
+        likes_count: 0,
+        liked_by_user_ids: [],
+        is_flagged: false,
+        is_hidden: false,
+        created_at: new Date().toISOString(),
+      };
+
+      setComments((prev) => {
+        const next = [localComment, ...prev];
+        saveLocalVideoComments(video.id, next);
+        return next;
+      });
+      if (parentCommentId) {
+        setReplyText('');
+        setReplyingToId(null);
+      } else {
+        setNewComment('');
       }
     } finally {
       setSubmittingComment(false);
@@ -380,14 +595,43 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       onRequireAuth();
       return;
     }
-    const res = await fetch(`/api/comments/${commentId}/like`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${authToken}` },
-    });
-    const data = await res.json();
-    if (res.ok && data.comment) {
-      setComments((prev) => prev.map((c) => (c.id === commentId ? data.comment : c)));
+    try {
+      const res = await fetch(`/api/comments/${commentId}/like`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.comment) {
+          setComments((prev) => {
+            const next = prev.map((c) => (c.id === commentId ? data.comment : c));
+            saveLocalVideoComments(video.id, next);
+            return next;
+          });
+          return;
+        }
+      }
+    } catch {
+      // Fallback to local toggle on static hosting
     }
+
+    setComments((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== commentId) return c;
+        const alreadyLiked = c.liked_by_user_ids.includes(currentUser.id);
+        const updatedLikes = alreadyLiked
+          ? c.liked_by_user_ids.filter((uid) => uid !== currentUser.id)
+          : [...c.liked_by_user_ids, currentUser.id];
+        return {
+          ...c,
+          liked_by_user_ids: updatedLikes,
+          likes_count: updatedLikes.length,
+        };
+      });
+      saveLocalVideoComments(video.id, next);
+      return next;
+    });
   };
 
   const handleReportItem = async (
@@ -399,19 +643,40 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       onRequireAuth();
       return;
     }
-    await fetch('/api/reports', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({
-        targetType,
-        targetId,
-        targetSummary: summary,
-        reason: 'Flagged by community member for editorial review',
-      }),
-    });
+    try {
+      await fetch('/api/reports', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          targetType,
+          targetId,
+          targetSummary: summary,
+          reason: 'Flagged by community member for editorial review',
+        }),
+      });
+    } catch {
+      // Ignore on static hosting
+    }
+    try {
+      const sb = getBrowserSupabaseClient(
+        (window as any).__KINGDOM_SUPABASE_URL__ || null,
+        (window as any).__KINGDOM_SUPABASE_KEY__ || null
+      );
+      if (sb) {
+        await sb.from('moderation_reports').insert({
+          reporter_id: currentUser.id,
+          target_type: targetType,
+          target_id: targetId,
+          reason: 'Flagged by community member for editorial review',
+          details: summary,
+        });
+      }
+    } catch {
+      // Ignore if FK constraint fails
+    }
     setReportFeedback('Report submitted to KINGDOM+ moderators.');
     setTimeout(() => setReportFeedback(null), 4000);
   };
@@ -525,20 +790,35 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                 }
               >
                 {playerError ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-zinc-950 gap-2.5">
+                  <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-zinc-950 gap-3">
                     <AlertTriangle className="w-8 h-8 text-amber-400" />
                     <div>
-                      <p className="text-xs sm:text-sm font-semibold text-zinc-100">Playback Restricted / Unavailable</p>
+                      <p className="text-xs sm:text-sm font-semibold text-zinc-100">Broadcast Stream Unavailable</p>
                       <p className="text-[11px] text-zinc-400 max-w-sm mt-0.5">{playerError}</p>
                     </div>
-                    <a
-                      href={`https://www.youtube.com/watch?v=${video.youtube_video_id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-semibold transition-colors shadow-lg"
-                    >
-                      <span>Watch Directly on YouTube &rarr;</span>
-                    </a>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlayerError(null);
+                          setStreamRetryCount((c) => c + 1);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-100 text-xs font-semibold transition-colors"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Retry Stream</span>
+                      </button>
+                      {relatedVideos.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={playNextRelated}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-semibold transition-colors shadow-lg"
+                        >
+                          <SkipForward className="w-3.5 h-3.5" />
+                          <span>Play Next Broadcast</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   /* Scaled wrapper crops out any top/bottom embed chrome & disables iframe clicks */
@@ -558,7 +838,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                   >
                     {/* Subtle KINGDOM+ Watermark Badge in Top-Left */}
                     {!isCompactMini && (
-                      <div className="absolute top-3 left-3 px-2.5 py-1 rounded-md bg-black/65 backdrop-blur-md border border-zinc-800/80 flex items-center gap-1.5 pointer-events-none">
+                      <div className="absolute top-3 left-3 px-2.5 py-1 rounded-md bg-black/65 backdrop-blur-md border border-zinc-800/80 flex items-center gap-1.5 pointer-events-none z-20">
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                         <span className="font-display text-[10px] font-bold tracking-wider text-amber-400">
                           KINGDOM+ STREAM
@@ -566,9 +846,17 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       </div>
                     )}
 
-                    {/* Native KINGDOM+ Pause Screen Overlay (Completely hides any external pause overlays) */}
+                    {/* Native KINGDOM+ Pause / Ready Screen Overlay */}
                     {!isPlaying && (
-                      <div className="absolute inset-0 bg-black/75 backdrop-blur-sm flex flex-col items-center justify-center gap-2 p-4 text-center transition-opacity">
+                      <div className="absolute inset-0 bg-black/70 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 p-4 text-center transition-opacity">
+                        {!hasStartedPlayback && currentTime < 1 && (video.thumbnail_maxres_url || video.thumbnail_high_url) && (
+                          <img
+                            src={video.thumbnail_maxres_url || video.thumbnail_high_url}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            className="absolute inset-0 w-full h-full object-cover opacity-40 -z-10"
+                          />
+                        )}
                         <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-amber-500 text-zinc-950 flex items-center justify-center shadow-2xl">
                           <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-current ml-0.5" />
                         </div>
@@ -578,7 +866,8 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                               {video.title}
                             </div>
                             <div className="text-[11px] text-amber-400 mt-0.5">
-                              {video.artist_name || video.channel_title} · Tap to Resume
+                              {video.artist_name || video.channel_title} ·{' '}
+                              {hasStartedPlayback || currentTime > 1 ? 'Tap to Resume' : 'Tap to Play'}
                             </div>
                           </div>
                         )}

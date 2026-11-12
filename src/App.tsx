@@ -33,6 +33,7 @@ import { VideoCard } from './components/VideoCard.tsx';
 import { WorshipPraiseSanctuaryView } from './components/WorshipPraiseSanctuaryView.tsx';
 import { YouTubePlayerModal } from './components/YouTubePlayerModal.tsx';
 import { PWAInstallButton } from './components/PWAInstallButton.tsx';
+import { getActiveUserSession, logoutUser } from './utils/authService.ts';
 import {
   DiscoveryFilterScope,
   IntelligentDiscoveryModal,
@@ -134,6 +135,7 @@ export default function App() {
   );
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [pendingVideoToPlay, setPendingVideoToPlay] = useState<KingdomVideo | null>(null);
 
   // Intelligent Discovery Modal state across the entire app
   const [isDiscoveryModalOpen, setIsDiscoveryModalOpen] = useState(false);
@@ -205,21 +207,17 @@ export default function App() {
   useEffect(() => {
     fetchCatalog();
 
-    if (authToken) {
-      fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${authToken}` },
+    getActiveUserSession()
+      .then(({ token, user }) => {
+        if (token && user) {
+          setAuthToken(token);
+          setCurrentUser(user);
+        } else {
+          setAuthToken(null);
+          setCurrentUser(null);
+        }
       })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (data?.user) {
-            setCurrentUser(data.user);
-          } else {
-            localStorage.removeItem('kingdom_plus_token');
-            setAuthToken(null);
-          }
-        })
-        .catch(() => {});
-    }
+      .catch(() => {});
 
     const initSupabaseInBrowser = async (url: string, anonKey: string) => {
       (window as any).__KINGDOM_SUPABASE_URL__ = url;
@@ -238,7 +236,13 @@ export default function App() {
     };
 
     fetch('/api/config/public')
-      .then((r) => r.json())
+      .then((r) => {
+        const ct = r.headers.get('content-type') || '';
+        if (!r.ok || !ct.includes('application/json')) {
+          throw new Error('Static config fallback');
+        }
+        return r.json();
+      })
       .then(async (cfg) => {
         const url =
           cfg?.supabase?.url ||
@@ -297,26 +301,36 @@ export default function App() {
     }
   }, [videos.length]);
 
+  const handleRequestPlayVideo = (vid: KingdomVideo | null | undefined) => {
+    if (!vid) return;
+    if (!currentUser) {
+      setPendingVideoToPlay(vid);
+      setShowAuthModal(true);
+      return;
+    }
+    setActiveVideo(vid);
+  };
+
   const handleAuthSuccess = (token: string, user: UserProfile) => {
     localStorage.setItem('kingdom_plus_token', token);
     setAuthToken(token);
     setCurrentUser(user);
     setShowAuthModal(false);
     fetchCatalog(token);
+
+    if (pendingVideoToPlay) {
+      setActiveVideo(pendingVideoToPlay);
+      setPendingVideoToPlay(null);
+    }
   };
 
   const handleLogout = async () => {
-    if (authToken) {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      }).catch(() => {});
-    }
-    localStorage.removeItem('kingdom_plus_token');
+    await logoutUser(authToken);
     setAuthToken(null);
     setCurrentUser(null);
     setWatchHistory([]);
     setSavedVideoIds([]);
+    setPendingVideoToPlay(null);
     setShowAuthModal(false);
     if (activeView === 'admin') setActiveView('streaming');
   };
@@ -327,17 +341,33 @@ export default function App() {
       setShowAuthModal(true);
       return;
     }
-    const res = await fetch('/api/user/saved-videos/toggle', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({ videoId }),
-    });
-    const data = await res.json();
-    if (Array.isArray(data.savedVideoIds)) {
-      setSavedVideoIds(data.savedVideoIds);
+    const nextSaved = savedVideoIds.includes(videoId)
+      ? savedVideoIds.filter((id) => id !== videoId)
+      : [...savedVideoIds, videoId];
+    setSavedVideoIds(nextSaved);
+    try {
+      localStorage.setItem(`kingdom_plus_saved_${currentUser.id}`, JSON.stringify(nextSaved));
+    } catch {
+      // Ignore storage error
+    }
+    try {
+      const res = await fetch('/api/user/saved-videos/toggle', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ videoId }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data.savedVideoIds)) {
+          setSavedVideoIds(data.savedVideoIds);
+        }
+      }
+    } catch {
+      // Optimistic local state retained on Cloudflare static hosting
     }
   };
 
@@ -886,7 +916,7 @@ export default function App() {
                     <div className="flex items-center gap-2.5 pt-1">
                       <button
                         type="button"
-                        onClick={() => setActiveVideo(currentHero)}
+                        onClick={() => handleRequestPlayVideo(currentHero)}
                         className="inline-flex items-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 shadow-lg"
                       >
                         <Play className="w-4 h-4 fill-current" />
@@ -959,7 +989,7 @@ export default function App() {
                 videos={streamingVideos}
                 channels={channels}
                 savedVideoIds={savedVideoIds}
-                onSelectVideo={setActiveVideo}
+                onSelectVideo={handleRequestPlayVideo}
                 onToggleSave={handleToggleSaveVideo}
                 onSelectChannel={openChannelCatalog}
                 onActiveLiveStreamsChange={setActiveLiveStreams}
@@ -980,7 +1010,7 @@ export default function App() {
                           <VideoCard
                             key={entry.id}
                             video={entry.video}
-                            onSelect={setActiveVideo}
+                            onSelect={handleRequestPlayVideo}
                             isSaved={savedVideoIds.includes(entry.video.id)}
                             onToggleSave={handleToggleSaveVideo}
                             watchProgressSeconds={entry.progress_seconds}
@@ -1062,7 +1092,7 @@ export default function App() {
               <GlobalChristianSearchSection
                 localVideos={videos}
                 savedVideoIds={savedVideoIds}
-                onSelectVideo={setActiveVideo}
+                onSelectVideo={handleRequestPlayVideo}
                 onToggleSave={handleToggleSaveVideo}
                 onSelectChannel={openChannelCatalog}
                 onDiscoveredVideoSelected={handleDiscoveredVideoSelected}
@@ -1085,7 +1115,7 @@ export default function App() {
             channels={channels}
             videos={videos}
             savedVideoIds={savedVideoIds}
-            onSelectVideo={setActiveVideo}
+            onSelectVideo={handleRequestPlayVideo}
             onToggleSave={handleToggleSaveVideo}
             onDiscoveredVideoSelected={handleDiscoveredVideoSelected}
           />
@@ -1157,7 +1187,7 @@ export default function App() {
             <GlobalChristianSearchSection
               localVideos={videos}
               savedVideoIds={savedVideoIds}
-              onSelectVideo={setActiveVideo}
+              onSelectVideo={handleRequestPlayVideo}
               onToggleSave={handleToggleSaveVideo}
               onSelectChannel={openChannelCatalog}
               onDiscoveredVideoSelected={handleDiscoveredVideoSelected}
@@ -1173,7 +1203,7 @@ export default function App() {
                     channels={channels}
                     worshipSubcategories={worshipSubcategories}
                     savedVideoIds={savedVideoIds}
-                    onSelectVideo={setActiveVideo}
+                    onSelectVideo={handleRequestPlayVideo}
                     onToggleSave={handleToggleSaveVideo}
                     onSelectChannel={openChannelCatalog}
                   />
@@ -1187,7 +1217,7 @@ export default function App() {
                     channels={channels}
                     christianLivingSubcategories={christianLivingSubcategories}
                     savedVideoIds={savedVideoIds}
-                    onSelectVideo={setActiveVideo}
+                    onSelectVideo={handleRequestPlayVideo}
                     onToggleSave={handleToggleSaveVideo}
                     onSelectChannel={openChannelCatalog}
                   />
@@ -1200,7 +1230,7 @@ export default function App() {
                     videos={streamingVideos}
                     channels={channels}
                     savedVideoIds={savedVideoIds}
-                    onSelectVideo={setActiveVideo}
+                    onSelectVideo={handleRequestPlayVideo}
                     onToggleSave={handleToggleSaveVideo}
                     onSelectChannel={openChannelCatalog}
                     onActiveLiveStreamsChange={setActiveLiveStreams}
@@ -1400,7 +1430,7 @@ export default function App() {
                                 <VideoCard
                                   key={video.id}
                                   video={video}
-                                  onSelect={setActiveVideo}
+                                  onSelect={handleRequestPlayVideo}
                                   isSaved={savedVideoIds.includes(video.id)}
                                   onToggleSave={handleToggleSaveVideo}
                                   onSelectChannel={openChannelCatalog}
@@ -1440,7 +1470,7 @@ export default function App() {
                                   <VideoCard
                                     key={`${col.slug}-${video.id}`}
                                     video={video}
-                                    onSelect={setActiveVideo}
+                                    onSelect={handleRequestPlayVideo}
                                     isSaved={savedVideoIds.includes(video.id)}
                                     onToggleSave={handleToggleSaveVideo}
                                     onSelectChannel={openChannelCatalog}
@@ -1462,7 +1492,7 @@ export default function App() {
                     <VideoCard
                       key={video.id}
                       video={video}
-                      onSelect={setActiveVideo}
+                      onSelect={handleRequestPlayVideo}
                       isSaved={savedVideoIds.includes(video.id)}
                       onToggleSave={handleToggleSaveVideo}
                       onSelectChannel={openChannelCatalog}
@@ -1483,7 +1513,7 @@ export default function App() {
               categories={eightMainCategories}
               savedVideoIds={savedVideoIds}
               watchHistory={watchHistory}
-              onSelectVideo={setActiveVideo}
+              onSelectVideo={handleRequestPlayVideo}
               onToggleSave={handleToggleSaveVideo}
               onSelectMinister={openChannelCatalog}
               onBack={() => setSelectedChannelId(null)}
@@ -1492,7 +1522,7 @@ export default function App() {
             <ExploreMinistersView
               profiles={ministerProfiles}
               onSelectMinister={openChannelCatalog}
-              onSelectVideo={setActiveVideo}
+              onSelectVideo={handleRequestPlayVideo}
               onDiscoveredVideoSelected={handleDiscoveredVideoSelected}
               savedVideoIds={savedVideoIds}
               onToggleSave={handleToggleSaveVideo}
@@ -1523,7 +1553,7 @@ export default function App() {
             authToken={authToken}
             categories={categories}
             onCatalogChanged={() => fetchCatalog()}
-            onPreviewVideo={setActiveVideo}
+            onPreviewVideo={handleRequestPlayVideo}
           />
         )}
       </main>
@@ -1681,10 +1711,14 @@ export default function App() {
           categories={eightMainCategories}
           savedVideos={savedVideosList}
           watchHistory={watchHistory}
-          onClose={() => setShowAuthModal(false)}
+          pendingVideoTitle={pendingVideoToPlay?.title || null}
+          onClose={() => {
+            setShowAuthModal(false);
+            setPendingVideoToPlay(null);
+          }}
           onAuthSuccess={handleAuthSuccess}
           onLogout={handleLogout}
-          onSelectVideo={setActiveVideo}
+          onSelectVideo={handleRequestPlayVideo}
           onToggleSave={handleToggleSaveVideo}
           onOpenAdmin={() => setActiveView('admin')}
         />
@@ -1698,9 +1732,10 @@ export default function App() {
         onClose={() => setIsDiscoveryModalOpen(false)}
         initialQuery={discoveryInitialQuery}
         initialScope={discoveryInitialScope}
+        allVideos={videos}
         savedVideoIds={savedVideoIds}
         onSelectVideo={(vid) => {
-          setActiveVideo(vid);
+          handleRequestPlayVideo(vid);
           handleDiscoveredVideoSelected(vid);
         }}
         onToggleSave={handleToggleSaveVideo}

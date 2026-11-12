@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
-import { LogOut, Shield, User, X } from 'lucide-react';
+import { LogOut, Play, Shield, User, X } from 'lucide-react';
 import { ContentCategory, KingdomVideo, UserProfile, WatchHistoryEntry } from '../types/kingdom.ts';
 import { VideoCard } from './VideoCard.tsx';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
+import {
+  registerUser,
+  loginUser,
+  resetUserPassword,
+  updateProfile,
+} from '../utils/authService.ts';
 
 interface AuthAndProfileModalProps {
   currentUser: UserProfile | null;
@@ -10,6 +16,7 @@ interface AuthAndProfileModalProps {
   categories: ContentCategory[];
   savedVideos: KingdomVideo[];
   watchHistory: WatchHistoryEntry[];
+  pendingVideoTitle?: string | null;
   onClose: () => void;
   onAuthSuccess: (token: string, user: UserProfile) => void;
   onLogout: () => void;
@@ -24,6 +31,7 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
   categories,
   savedVideos,
   watchHistory,
+  pendingVideoTitle,
   onClose,
   onAuthSuccess,
   onLogout,
@@ -31,7 +39,7 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
   onToggleSave,
   onOpenAdmin,
 }) => {
-  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('register');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -59,40 +67,28 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
 
     try {
       if (authMode === 'reset') {
-        const res = await fetch('/api/auth/reset-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, newPassword: password }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setError(data.error || 'Password reset failed.');
-        } else {
-          setMessage(data.message);
-          setAuthMode('login');
-        }
+        const msg = await resetUserPassword(email, password);
+        setMessage(msg);
+        setAuthMode('login');
         return;
       }
 
-      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      if (authMode === 'register') {
+        const result = await registerUser({
           email,
           password,
           fullName,
           username,
           location,
           denomination,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || 'Authentication failed.');
-      } else if (data.token && data.user) {
-        onAuthSuccess(data.token, data.user);
+        });
+        onAuthSuccess(result.token, result.user);
+      } else {
+        const result = await loginUser(email, password);
+        onAuthSuccess(result.token, result.user);
       }
+    } catch (err: any) {
+      setError(err?.message || 'Authentication failed.');
     } finally {
       setLoading(false);
     }
@@ -103,24 +99,19 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
     if (!authToken) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/profile', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          bio: editBio,
-          location: editLocation,
-          denomination_or_church: editChurch,
+      const updated = await updateProfile(authToken, {
+        bio: editBio,
+        location: editLocation,
+        denomination_or_church: editChurch,
+        preferences: {
           favoriteCategories: favCategories,
-        }),
+          favoriteMinisters: currentUser?.preferences?.favoriteMinisters || [],
+        },
       });
-      const data = await res.json();
-      if (res.ok && data.user) {
-        onAuthSuccess(authToken, data.user);
-        setMessage('Profile & recommendation preferences saved.');
-      }
+      onAuthSuccess(authToken, updated);
+      setMessage('Profile & recommendation preferences saved.');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save preferences.');
     } finally {
       setLoading(false);
     }
@@ -140,7 +131,11 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
             <span className="font-display text-xl font-semibold text-amber-400">KINGDOM+</span>
             <span className="text-zinc-600">·</span>
             <span className="text-sm font-medium text-zinc-200">
-              {currentUser ? 'Member Sanctuary & Watchlist' : 'Member Account Access'}
+              {currentUser
+                ? 'Member Sanctuary & Watchlist'
+                : pendingVideoTitle
+                ? 'Sign Up to Watch Video'
+                : 'Member Account Access'}
             </span>
           </div>
           <button
@@ -154,29 +149,33 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
 
         {!currentUser ? (
           <form onSubmit={handleAuthSubmit} className="max-w-md mx-auto flex flex-col gap-4 py-2">
+            {pendingVideoTitle && (
+              <div className="p-3.5 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
+                  <Play className="w-4 h-4 fill-current" />
+                </div>
+                <div className="text-xs">
+                  <span className="font-semibold text-amber-300 block line-clamp-1">
+                    Sign up to play: &ldquo;{pendingVideoTitle}&rdquo;
+                  </span>
+                  <p className="text-zinc-300 mt-1">
+                    Free sanctuary account required before streaming Christian movies, sermons, and worship.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-lg">
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('login');
-                  setError(null);
-                }}
-                className={`flex-1 py-2 rounded-md text-xs font-medium ${
-                  authMode === 'login' ? 'bg-amber-500 text-zinc-950 font-semibold' : 'text-zinc-400'
-                }`}
-              >
-                Sign In
-              </button>
               <button
                 type="button"
                 onClick={() => {
                   setAuthMode('register');
                   setError(null);
                 }}
-                className={`flex-1 py-2 rounded-md text-xs font-medium ${
+                className={`flex-1 py-2 rounded-md text-xs font-medium transition-colors ${
                   authMode === 'register'
                     ? 'bg-amber-500 text-zinc-950 font-semibold'
-                    : 'text-zinc-400'
+                    : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 Create Account
@@ -184,13 +183,27 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  setAuthMode('login');
+                  setError(null);
+                }}
+                className={`flex-1 py-2 rounded-md text-xs font-medium transition-colors ${
+                  authMode === 'login'
+                    ? 'bg-amber-500 text-zinc-950 font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   setAuthMode('reset');
                   setError(null);
                 }}
-                className={`flex-1 py-2 rounded-md text-xs font-medium ${
+                className={`flex-1 py-2 rounded-md text-xs font-medium transition-colors ${
                   authMode === 'reset'
                     ? 'bg-amber-500 text-zinc-950 font-semibold'
-                    : 'text-zinc-400'
+                    : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 Reset Password
@@ -226,8 +239,9 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
                     <label className="block text-xs text-zinc-400 mb-1">Username</label>
                     <input
                       type="text"
+                      required
                       value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
                       placeholder="chukwudi_ng"
                       className="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
                     />
@@ -297,10 +311,6 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
                 ? 'Create KINGDOM+ Account'
                 : 'Update Password'}
             </button>
-
-            <p className="text-[11px] text-zinc-500 text-center">
-              Note: Registering with the platform owner email (<code className="text-zinc-400">okorotochukwu007@gmail.com</code>) or as the first account automatically grants <strong className="text-amber-400">Super Admin</strong> access to the Admin Command Center.
-            </p>
           </form>
         ) : (
           <div className="flex flex-col gap-6">

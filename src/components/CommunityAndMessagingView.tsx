@@ -44,6 +44,8 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       const headers: Record<string, string> = {};
       if (authToken) headers.Authorization = `Bearer ${authToken}`;
       const res = await fetch('/api/community/members', { headers });
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) return;
       const data = await res.json();
       if (Array.isArray(data.members)) setMembers(data.members);
       if (Array.isArray(data.followingIds)) setFollowingIds(data.followingIds);
@@ -57,6 +59,8 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       const res = await fetch('/api/messages/conversations', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) return;
       const data = await res.json();
       if (Array.isArray(data.conversations)) {
         setConversations(data.conversations);
@@ -70,6 +74,8 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       const res = await fetch(`/api/messages/${recipientId}`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) return;
       const data = await res.json();
       if (Array.isArray(data.messages)) {
         setMessages(data.messages);
@@ -97,18 +103,27 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       onRequireAuth();
       return;
     }
-    const res = await fetch('/api/community/follow', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({ targetUserId }),
-    });
-    const data = await res.json();
-    if (Array.isArray(data.followingIds)) {
-      setFollowingIds(data.followingIds);
-    }
+    try {
+      const res = await fetch('/api/community/follow', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ targetUserId }),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data.followingIds)) {
+          setFollowingIds(data.followingIds);
+          return;
+        }
+      }
+    } catch {}
+    setFollowingIds((prev) =>
+      prev.includes(targetUserId) ? prev.filter((id) => id !== targetUserId) : [...prev, targetUserId]
+    );
   };
 
   const handleToggleBlock = async (targetUserId: string) => {
@@ -116,20 +131,31 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       onRequireAuth();
       return;
     }
-    const res = await fetch('/api/community/block', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({ targetUserId }),
-    });
-    const data = await res.json();
-    if (Array.isArray(data.blockedIds)) {
-      setBlockedIds(data.blockedIds);
-      setStatusNotice('Member block preferences updated.');
-      setTimeout(() => setStatusNotice(null), 3500);
-    }
+    try {
+      const res = await fetch('/api/community/block', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ targetUserId }),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data.blockedIds)) {
+          setBlockedIds(data.blockedIds);
+          setStatusNotice('Member block preferences updated.');
+          setTimeout(() => setStatusNotice(null), 3500);
+          return;
+        }
+      }
+    } catch {}
+    setBlockedIds((prev) =>
+      prev.includes(targetUserId) ? prev.filter((id) => id !== targetUserId) : [...prev, targetUserId]
+    );
+    setStatusNotice('Member block preferences updated.');
+    setTimeout(() => setStatusNotice(null), 3500);
   };
 
   const handleReportMember = async (member: UserProfile) => {
@@ -137,19 +163,21 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       onRequireAuth();
       return;
     }
-    await fetch('/api/reports', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({
-        targetType: 'user',
-        targetId: member.id,
-        targetSummary: `${member.full_name} (@${member.username})`,
-        reason: 'Member conduct or profile reported for review',
-      }),
-    });
+    try {
+      await fetch('/api/reports', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          targetType: 'user',
+          targetId: member.id,
+          targetSummary: `${member.full_name} (@${member.username})`,
+          reason: 'Member conduct or profile reported for review',
+        }),
+      });
+    } catch {}
     setStatusNotice(`Report submitted regarding @${member.username}.`);
     setTimeout(() => setStatusNotice(null), 3500);
   };
@@ -178,11 +206,14 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         },
         body: JSON.stringify({ content: messageInput.trim() }),
       });
-      const data = await res.json();
-      if (res.ok && data.message) {
-        setMessages((prev) => [...prev, data.message]);
-        setMessageInput('');
-        fetchConversations();
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.message) {
+          setMessages((prev) => [...prev, data.message]);
+          setMessageInput('');
+          fetchConversations();
+        }
       }
     } finally {
       setSendingMsg(false);

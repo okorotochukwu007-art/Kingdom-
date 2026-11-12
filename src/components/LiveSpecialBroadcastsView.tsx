@@ -382,7 +382,8 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     setLoadingLive(true);
     try {
       const res = await fetch('/api/live-check');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (Array.isArray(data?.liveStreams)) {
           setLiveStreamsRaw(data.liveStreams);
