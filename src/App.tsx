@@ -690,12 +690,12 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#09090B] text-[#FAFAFA] flex flex-col">
+    <div className="min-h-screen w-full max-w-full overflow-x-clip bg-[#09090B] text-[#FAFAFA] flex flex-col">
       {/* ====================================================================
           TOP BAR CONTRACT (3 Zones separated by gap-8)
       ==================================================================== */}
-      <header className="sticky top-0 z-40 bg-[#09090B]/95 backdrop-blur-md border-b border-zinc-800/80">
-        <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-8 px-4 sm:px-8 py-3 sm:py-4">
+      <header className="sticky top-0 z-40 w-full bg-[#09090B]/95 backdrop-blur-md border-b border-zinc-800/80">
+        <div className="max-w-[1440px] w-full mx-auto flex items-center justify-between gap-2 sm:gap-8 px-3.5 sm:px-8 py-3 sm:py-4">
           {/* Zone 1: Single text element wordmark */}
           <a
             href="#top"
@@ -872,7 +872,7 @@ export default function App() {
               <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/40 to-black/30" />
 
               <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 sm:py-12 lg:py-16 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
-                <div className="lg:col-span-8 flex flex-col gap-2.5 sm:gap-3.5">
+                <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-2.5 sm:gap-3.5">
                   {/* Concise 1-Line Kicker */}
                   <div className="flex items-center flex-wrap gap-2 text-xs font-medium text-amber-400">
                     {currentHero?.is_live_now && currentHero.live_broadcast_content === 'live' ? (
@@ -946,7 +946,7 @@ export default function App() {
 
                 {/* Right 4 Columns: Horizontal Swipeable on Mobile, Vertical Stack on Desktop */}
                 {heroCandidates.length > 1 && (
-                  <div className="lg:col-span-4 flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/55 lg:backdrop-blur-md lg:border lg:border-zinc-800/80 rounded-xl lg:p-3">
+                  <div className="lg:col-span-4 min-w-0 w-full flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/55 lg:backdrop-blur-md lg:border lg:border-zinc-800/80 rounded-xl lg:p-3">
                     {heroCandidates.map((cand, idx) => (
                       <button
                         key={cand.id}

@@ -816,15 +816,15 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     <div
       className={
         isMinimized
-          ? 'fixed z-50 bottom-[62px] md:bottom-5 right-2 left-2 sm:left-auto sm:right-5 sm:w-[370px] lg:w-[410px] bg-[#121215]/95 backdrop-blur-xl border border-zinc-700/90 rounded-2xl shadow-2xl overflow-hidden transition-all duration-300'
-          : 'fixed inset-0 z-50 bg-[#09090B] overflow-y-auto'
+          ? 'fixed z-50 bottom-[68px] md:bottom-5 right-2 left-2 sm:left-auto sm:right-5 sm:w-[370px] lg:w-[410px] bg-[#121215]/95 backdrop-blur-xl border border-zinc-700/90 rounded-2xl shadow-2xl overflow-hidden transition-all duration-300'
+          : 'fixed inset-0 z-50 w-full max-w-full bg-[#09090B] overflow-y-auto overflow-x-clip'
       }
     >
       <div
         className={
           isMinimized
             ? 'flex flex-col'
-            : 'min-h-screen max-w-[1440px] mx-auto px-0 sm:px-6 lg:px-8 pb-24 sm:py-5 flex flex-col gap-0 sm:gap-5'
+            : 'min-h-screen w-full max-w-[1440px] mx-auto px-0 sm:px-6 lg:px-8 pb-24 sm:py-5 flex flex-col gap-0 sm:gap-5'
         }
       >
         {/* ====================================================================
@@ -891,10 +891,10 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
           className={
             isMinimized
               ? 'flex flex-col'
-              : 'grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 lg:gap-8 items-start'
+              : 'grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 lg:gap-8 items-start w-full'
           }
         >
-          <div className={isMinimized ? 'flex flex-col' : 'lg:col-span-8 flex flex-col gap-2.5 sm:gap-5'}>
+          <div className={isMinimized ? 'flex flex-col' : 'lg:col-span-8 min-w-0 w-full flex flex-col gap-2.5 sm:gap-5'}>
             <div
               ref={fullscreenWrapperRef}
               className={
@@ -904,10 +904,10 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     : 'flex flex-col'
                   : isNativeFullscreen
                     ? 'fixed inset-0 z-[100] w-screen h-[100dvh] bg-black flex flex-col items-center justify-center overflow-hidden select-none'
-                    : 'sticky top-0 z-30 sm:static bg-[#09090B] flex flex-col gap-0 sm:gap-2.5'
+                    : 'sticky top-0 z-30 sm:static w-full min-w-0 bg-[#09090B] flex flex-col gap-0 sm:gap-2.5'
               }
             >
-              {/* THE TRUE 16:9 SHIELDED STREAM CONTAINER (CAPTIONS PERFECTLY ALIGNED) */}
+              {/* THE TRUE 16:9 SHIELDED STREAM CONTAINER (AUTO-FITS EXACT DEVICE VIEWPORT) */}
               <div
                 style={
                   isNativeFullscreen && isRotatedLandscape && !isMinimized
@@ -925,8 +925,8 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       ? 'relative w-24 sm:w-28 aspect-video rounded-lg overflow-hidden bg-black border border-zinc-800 shrink-0 select-none'
                       : 'relative aspect-video w-full bg-black border-b border-zinc-800 overflow-hidden select-none'
                     : isNativeFullscreen
-                      ? 'relative w-full h-full flex items-center justify-center bg-black overflow-hidden select-none'
-                      : 'relative aspect-video w-full sm:rounded-xl overflow-hidden bg-black border-b sm:border border-zinc-800 shadow-2xl select-none'
+                      ? 'relative shrink-0 w-full h-full flex items-center justify-center bg-black overflow-hidden select-none'
+                      : 'relative aspect-video w-full max-w-[calc(62dvh*16/9)] lg:max-w-full mx-auto sm:rounded-xl overflow-hidden bg-black border-b sm:border border-zinc-800 shadow-2xl select-none'
                 }
               >
                 {playerError ? (
@@ -961,11 +961,24 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     </div>
                   </div>
                 ) : (
-                  /* 1:1 True 16:9 Frame so Subtitles & Lower-Third Captions Stay 100% Aligned Inside the Video */
+                  /* Exact 16:9 Viewport-Fitted Stage: Automatically matches exact device width & height without cropping or overflowing */
                   <div
+                    style={
+                      isNativeFullscreen && !isMinimized
+                        ? isRotatedLandscape
+                          ? {
+                              width: 'min(100dvh, calc(100vw * 16 / 9))',
+                              height: 'min(100vw, calc(100dvh * 9 / 16))',
+                            }
+                          : {
+                              width: 'min(100vw, calc(100dvh * 16 / 9))',
+                              height: 'min(100dvh, calc(100vw * 9 / 16))',
+                            }
+                        : undefined
+                    }
                     className={
                       isNativeFullscreen && !isMinimized
-                        ? 'relative w-full h-full max-w-full max-h-full aspect-video mx-auto my-auto overflow-hidden pointer-events-none'
+                        ? 'relative shrink-0 mx-auto my-auto overflow-hidden pointer-events-none'
                         : 'absolute inset-0 w-full h-full overflow-hidden pointer-events-none'
                     }
                   >
@@ -2014,7 +2027,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
             <div
               className={`${
                 mobilePlayerTab === 'comments' ? 'flex mx-3.5 sm:mx-0' : 'hidden lg:flex'
-              } lg:col-span-4 bg-[#121215] border border-zinc-800 rounded-xl p-4 sm:p-5 flex-col gap-4`}
+              } lg:col-span-4 min-w-0 w-full bg-[#121215] border border-zinc-800 rounded-xl p-4 sm:p-5 flex-col gap-4`}
             >
               <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
                 <div className="flex items-center gap-2">

@@ -284,7 +284,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
         <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/45 to-black/30" />
 
         <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-7 sm:py-12 lg:py-14 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
-          <div className="lg:col-span-8 flex flex-col gap-3">
+          <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-3">
             <div className="flex items-center flex-wrap gap-2 text-[11px] sm:text-xs font-medium text-amber-400">
               <span>Christian Cinema</span>
               {currentHero && (
@@ -350,7 +350,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
 
           {/* Right 4 Columns: Top High-Impression Movie Lineup (Swipeable on mobile) */}
           {heroMovies.length > 1 && (
-            <div className="lg:col-span-4 flex flex-col gap-1.5 bg-black/55 backdrop-blur-md border border-zinc-800/80 rounded-xl p-2.5 sm:p-3.5">
+            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/55 backdrop-blur-md border border-zinc-800/80 rounded-xl p-2.5 sm:p-3.5">
               <div className="text-[11px] font-medium text-zinc-400 px-1 pb-0.5">
                 Featured Movies ({heroIndex + 1}/{heroMovies.length})
               </div>

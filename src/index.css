@@ -9,16 +9,44 @@
   }
 
   html {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
     scroll-behavior: smooth;
+  }
+
+  body, #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
   }
 
   body {
     font-family: var(--font-sans);
     background-color: #09090B;
     color: #FAFAFA;
-    overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
+  }
+
+  /* Prevent iOS Safari from auto-zooming the screen when tapping inputs/textareas */
+  @media (max-width: 767px) {
+    input, textarea, select {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Guarantee every video stream iframe matches 100% of its device-fitted frame */
+  iframe[id^="kp-stream-"] {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    display: block !important;
+    border: 0 !important;
   }
 
   h1, h2, .font-display {
