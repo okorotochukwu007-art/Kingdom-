@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Conversation, DirectMessage, UserProfile } from '../types/kingdom.ts';
 import { formatRelativeDate } from '../utils/formatters.ts';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
 
 interface CommunityAndMessagingViewProps {
   currentUser: UserProfile | null;
@@ -24,6 +25,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   authToken,
   onRequireAuth,
 }) => {
+  const { isDataSaverActive } = useDataSaver();
   const [activeSubTab, setActiveSubTab] = useState<'directory' | 'messages'>('directory');
   const [members, setMembers] = useState<UserProfile[]>([]);
   const [followingIds, setFollowingIds] = useState<string[]>([]);
@@ -86,7 +88,9 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   useEffect(() => {
     fetchCommunityData();
     if (authToken) fetchConversations();
+    const pollMs = isDataSaverActive ? 15000 : 4000;
     const interval = window.setInterval(() => {
+      if (document.hidden) return;
       fetchCommunityData();
       if (authToken) {
         fetchConversations();
@@ -94,9 +98,9 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
           fetchMessagesForRecipient(selectedRecipient.id);
         }
       }
-    }, 4000);
+    }, pollMs);
     return () => window.clearInterval(interval);
-  }, [authToken, selectedRecipient?.id]);
+  }, [authToken, selectedRecipient?.id, isDataSaverActive]);
 
   const handleToggleFollow = async (targetUserId: string) => {
     if (!currentUser || !authToken) {

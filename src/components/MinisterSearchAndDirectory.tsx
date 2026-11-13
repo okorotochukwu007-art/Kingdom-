@@ -20,6 +20,8 @@ import {
 } from '../types/kingdom.ts';
 import { formatCompactNumber, formatDurationSeconds, formatRelativeDate } from '../utils/formatters.ts';
 import { VideoCard } from './VideoCard.tsx';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
+import { getOptimizedAvatarUrl } from '../utils/dataSaver.ts';
 
 export interface DiscoveredMinisterProfileData {
   name: string;
@@ -648,15 +650,20 @@ export const MinisterProfileView: React.FC<MinisterProfileViewProps> = ({
   onSelectMinister,
   onBack,
 }) => {
+  const { isDataSaverActive } = useDataSaver();
   const [selectedCategorySlug, setSelectedCategorySlug] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'popular' | 'recent' | 'trending'>('popular');
   const [searchWithinMinister, setSearchWithinMinister] = useState('');
+  const [visibleVideosCount, setVisibleVideosCount] = useState<number>(() =>
+    isDataSaverActive ? 12 : 24
+  );
 
-  // Reset category filter when switching minister
+  // Reset category filter & pagination when switching minister
   useEffect(() => {
     setSelectedCategorySlug('all');
     setSearchWithinMinister('');
-  }, [profile.primaryChannel.id]);
+    setVisibleVideosCount(isDataSaverActive ? 12 : 24);
+  }, [profile.primaryChannel.id, isDataSaverActive]);
 
   const watchMap = useMemo(() => {
     const map = new Map<string, WatchHistoryEntry>();
@@ -726,7 +733,7 @@ export const MinisterProfileView: React.FC<MinisterProfileViewProps> = ({
       <div className="p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-[#141418] via-[#121215] to-amber-950/20 border border-zinc-800/90 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
           <img
-            src={profile.avatarUrl}
+            src={getOptimizedAvatarUrl(profile.avatarUrl, isDataSaverActive)}
             alt={profile.displayName}
             referrerPolicy="no-referrer"
             onError={(e) => {
@@ -867,21 +874,36 @@ export const MinisterProfileView: React.FC<MinisterProfileViewProps> = ({
 
       {/* Videos Grid */}
       {filteredAndSortedVideos.length > 0 ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          {filteredAndSortedVideos.map((v) => {
-            const watch = watchMap.get(v.id);
-            return (
-              <VideoCard
-                key={v.id}
-                video={v}
-                onSelect={onSelectVideo}
-                isSaved={savedVideoIds.includes(v.id)}
-                onToggleSave={onToggleSave}
-                watchProgressSeconds={watch?.progress_seconds}
-                watchDurationSeconds={watch?.duration_seconds}
-              />
-            );
-          })}
+        <div className="flex flex-col gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+            {filteredAndSortedVideos.slice(0, visibleVideosCount).map((v) => {
+              const watch = watchMap.get(v.id);
+              return (
+                <VideoCard
+                  key={v.id}
+                  video={v}
+                  onSelect={onSelectVideo}
+                  isSaved={savedVideoIds.includes(v.id)}
+                  onToggleSave={onToggleSave}
+                  watchProgressSeconds={watch?.progress_seconds}
+                  watchDurationSeconds={watch?.duration_seconds}
+                />
+              );
+            })}
+          </div>
+          {filteredAndSortedVideos.length > visibleVideosCount && (
+            <div className="flex justify-center pt-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setVisibleVideosCount((c) => c + (isDataSaverActive ? 12 : 24))
+                }
+                className="px-6 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/40 text-amber-300 text-xs font-semibold"
+              >
+                Load More Videos ({Math.min(visibleVideosCount, filteredAndSortedVideos.length)} of {filteredAndSortedVideos.length})
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="p-12 rounded-2xl bg-[#121215] border border-zinc-800/80 text-center space-y-3">
@@ -1133,6 +1155,7 @@ export const ExploreMinistersView: React.FC<ExploreMinistersViewProps> = ({
   savedVideoIds = [],
   onToggleSave,
 }) => {
+  const { isDataSaverActive } = useDataSaver();
   const [roleFilter, setRoleFilter] = useState<
     'all' | 'pastors' | 'artists' | 'churches' | 'marriage'
   >('all');
@@ -1306,8 +1329,10 @@ export const ExploreMinistersView: React.FC<ExploreMinistersViewProps> = ({
               <div className="space-y-3.5">
                 <div className="flex items-start gap-4">
                   <img
-                    src={profile.avatarUrl}
+                    src={getOptimizedAvatarUrl(profile.avatarUrl, isDataSaverActive)}
                     alt={profile.displayName}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${encodeURIComponent(

@@ -24,6 +24,7 @@ import {
   saveBroadcastReminderSubscription,
 } from '../utils/supabaseCloudSync.ts';
 import { VideoCard } from './VideoCard.tsx';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
 
 interface LiveSpecialBroadcastsViewProps {
   videos: KingdomVideo[];
@@ -399,11 +400,18 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     }
   };
 
+  const { isDataSaverActive } = useDataSaver();
+
   useEffect(() => {
     fetchRealTimeLiveStreams();
-    const pollTimer = window.setInterval(fetchRealTimeLiveStreams, 45_000);
+    const pollMs = isDataSaverActive ? 300_000 : 45_000;
+    const pollTimer = window.setInterval(() => {
+      if (!document.hidden) {
+        fetchRealTimeLiveStreams();
+      }
+    }, pollMs);
     return () => window.clearInterval(pollTimer);
-  }, []);
+  }, [isDataSaverActive]);
 
   // Convert real-time live streams into playable KingdomVideo objects
   const activeRealTimeLiveVideos = useMemo(() => {

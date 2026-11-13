@@ -16,6 +16,11 @@ import {
 } from '../types/kingdom.ts';
 import { formatCompactNumber } from '../utils/formatters.ts';
 import { VideoCard } from './VideoCard.tsx';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
+import {
+  getOptimizedAvatarUrl,
+  getOptimizedThumbnailUrl,
+} from '../utils/dataSaver.ts';
 
 interface ChristianLivingSanctuaryViewProps {
   videos: KingdomVideo[];
@@ -127,12 +132,16 @@ export const ChristianLivingSanctuaryView: React.FC<ChristianLivingSanctuaryView
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMinisterId, setSelectedMinisterId] = useState<string | null>(null);
+  const { isDataSaverActive } = useDataSaver();
   const [ministerGroupFilter, setMinisterGroupFilter] = useState<MinisterGroupFilter>('all');
   const [selectedSubcategorySlug, setSelectedSubcategorySlug] = useState<
     'all' | ChristianLivingSubcategorySlug
   >('all');
   const [sortMode, setSortMode] = useState<ChristianLivingSortMode>('smart_rank');
   const [showAllMinistersGrid, setShowAllMinistersGrid] = useState(false);
+  const [visibleTeachingsCount, setVisibleTeachingsCount] = useState<number>(() =>
+    isDataSaverActive ? 12 : 24
+  );
 
   const activeSubcategories = useMemo(() => {
     const src =
@@ -493,8 +502,8 @@ export const ChristianLivingSanctuaryView: React.FC<ChristianLivingSanctuaryView
               const isSelected = selectedMinisterId === minister.id;
               const displayName = minister.speaker_name || minister.title;
               const avatarSrc =
-                minister.avatar_url ||
-                stats.topVideo?.thumbnail_high_url ||
+                getOptimizedAvatarUrl(minister.avatar_url, isDataSaverActive) ||
+                getOptimizedThumbnailUrl(stats.topVideo, isDataSaverActive, 'mini') ||
                 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=240&auto=format&fit=crop&q=80';
 
               return (
@@ -515,6 +524,8 @@ export const ChristianLivingSanctuaryView: React.FC<ChristianLivingSanctuaryView
                   <img
                     src={avatarSrc}
                     alt={displayName}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                     className="w-8 h-8 rounded-full object-cover bg-zinc-800 shrink-0 border border-zinc-700/70"
                   />
@@ -614,8 +625,12 @@ export const ChristianLivingSanctuaryView: React.FC<ChristianLivingSanctuaryView
           <div className="flex items-center gap-3.5 min-w-0">
             <img
               src={
-                selectedMinister.avatar_url ||
-                ministerStatsMap.get(selectedMinister.id)?.topVideo?.thumbnail_high_url ||
+                getOptimizedAvatarUrl(selectedMinister.avatar_url, isDataSaverActive) ||
+                getOptimizedThumbnailUrl(
+                  ministerStatsMap.get(selectedMinister.id)?.topVideo,
+                  isDataSaverActive,
+                  'mini'
+                ) ||
                 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=240&auto=format&fit=crop&q=80'
               }
               alt={selectedMinister.speaker_name || selectedMinister.title}
@@ -737,17 +752,32 @@ export const ChristianLivingSanctuaryView: React.FC<ChristianLivingSanctuaryView
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-              {filteredTeachings.map((video) => (
-                <VideoCard
-                  key={video.id}
-                  video={video}
-                  onSelect={onSelectVideo}
-                  isSaved={savedVideoIds.includes(video.id)}
-                  onToggleSave={onToggleSave}
-                  onSelectChannel={(chId) => setSelectedMinisterId(chId)}
-                />
-              ))}
+            <div className="flex flex-col gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                {filteredTeachings.slice(0, visibleTeachingsCount).map((video) => (
+                  <VideoCard
+                    key={video.id}
+                    video={video}
+                    onSelect={onSelectVideo}
+                    isSaved={savedVideoIds.includes(video.id)}
+                    onToggleSave={onToggleSave}
+                    onSelectChannel={(chId) => setSelectedMinisterId(chId)}
+                  />
+                ))}
+              </div>
+              {filteredTeachings.length > visibleTeachingsCount && (
+                <div className="flex justify-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVisibleTeachingsCount((c) => c + (isDataSaverActive ? 12 : 24))
+                    }
+                    className="px-6 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/40 text-amber-300 text-xs font-semibold"
+                  >
+                    Load More Teachings ({Math.min(visibleTeachingsCount, filteredTeachings.length)} of {filteredTeachings.length})
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

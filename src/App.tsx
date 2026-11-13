@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Clock,
   Film,
+  Gauge,
   LayoutGrid,
   MessageSquare,
   Play,
@@ -59,6 +60,12 @@ import {
   fetchDiscoveredVideosFromSupabase,
   syncDiscoveredVideoToSupabase,
 } from './utils/supabaseCloudSync.ts';
+import { useDataSaver } from './hooks/useDataSaver.ts';
+import {
+  getDataSaverStatus,
+  getOptimizedAvatarUrl,
+  getOptimizedThumbnailUrl,
+} from './utils/dataSaver.ts';
 
 type NavView =
   | 'streaming'
@@ -93,11 +100,18 @@ const EIGHT_MAIN_CATEGORY_SLUGS = [
 ] as const;
 
 export default function App() {
+  const { isDataSaverActive, deviceSaveData, toggleQuickDataSaver } = useDataSaver();
+  const [dataSaverToast, setDataSaverToast] = useState<string | null>(null);
+  const dataSaverToastTimerRef = React.useRef<number | null>(null);
+
   const [activeView, setActiveView] = useState<NavView>('streaming');
   const [rankingMode, setRankingMode] = useState<RankingMode>('rails');
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategorySlug, setSelectedCategorySlug] = useState<string>('all');
+  const [visibleCategoryCount, setVisibleCategoryCount] = useState<number>(() =>
+    getDataSaverStatus().isDataSaverActive ? 12 : 24
+  );
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [selectedMarriageCollectionSlug, setSelectedMarriageCollectionSlug] = useState<
     'all' | MarriageCollectionSlug
@@ -223,6 +237,7 @@ export default function App() {
       (window as any).__KINGDOM_SUPABASE_URL__ = url;
       (window as any).__KINGDOM_SUPABASE_KEY__ = anonKey;
       getBrowserSupabaseClient(url, anonKey);
+      if (getDataSaverStatus().isDataSaverActive) return;
       const cloudDiscovered = await fetchDiscoveredVideosFromSupabase();
       if (cloudDiscovered.length > 0) {
         setVideos((prev) => {
@@ -269,6 +284,7 @@ export default function App() {
       });
 
     const syncDailyFreshUploads = async () => {
+      if (document.hidden || getDataSaverStatus().isDataSaverActive) return;
       try {
         const res = await fetch('/api/daily-sync');
         if (!res.ok) return;
@@ -289,7 +305,12 @@ export default function App() {
 
     syncDailyFreshUploads();
     const dailySyncTimer = window.setInterval(syncDailyFreshUploads, 15 * 60 * 1000);
-    return () => window.clearInterval(dailySyncTimer);
+    return () => {
+      window.clearInterval(dailySyncTimer);
+      if (dataSaverToastTimerRef.current) {
+        window.clearTimeout(dataSaverToastTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -438,6 +459,25 @@ export default function App() {
       ),
     [videos, movieCategorySlugs]
   );
+
+  // Precompute video counts for the 8 Main Categories once per catalog change
+  const categoryCountsMap = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const cat of eightMainCategories) {
+      counts.set(cat.slug, 0);
+    }
+    for (const v of streamingVideos) {
+      if (counts.has(v.primary_category_slug)) {
+        counts.set(v.primary_category_slug, (counts.get(v.primary_category_slug) || 0) + 1);
+      }
+      for (const sec of v.secondary_category_slugs) {
+        if (sec !== v.primary_category_slug && counts.has(sec)) {
+          counts.set(sec, (counts.get(sec) || 0) + 1);
+        }
+      }
+    }
+    return counts;
+  }, [eightMainCategories, streamingVideos]);
 
   // Consolidated Minister Profiles for Dedicated Minister Search & Explore Ministers Page (Sections 5 & 6)
   const ministerProfiles = useMemo(
@@ -677,16 +717,45 @@ export default function App() {
     currentUser?.role === 'super_admin' ||
     currentUser?.role === 'moderator';
 
+  const switchView = (nextView: NavView, resetMinisters = false) => {
+    React.startTransition(() => {
+      if (resetMinisters) setSelectedChannelId(null);
+      setActiveView(nextView);
+    });
+    window.scrollTo(0, 0);
+  };
+
   const openChannelCatalog = (channelId: string) => {
-    setSelectedChannelId(channelId);
-    setActiveView('ministers');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    React.startTransition(() => {
+      setSelectedChannelId(channelId);
+      setActiveView('ministers');
+    });
+    window.scrollTo(0, 0);
+  };
+
+  const handleQuickToggleDataSaver = () => {
+    const nextActive = toggleQuickDataSaver();
+    setVisibleCategoryCount(nextActive ? 12 : 24);
+    setDataSaverToast(
+      nextActive
+        ? 'Data-Saver On · Lighter thumbnails & reduced background data'
+        : 'Standard Quality · Full HD artwork & live updates'
+    );
+    if (dataSaverToastTimerRef.current) {
+      window.clearTimeout(dataSaverToastTimerRef.current);
+    }
+    dataSaverToastTimerRef.current = window.setTimeout(() => {
+      setDataSaverToast(null);
+    }, 2600);
   };
 
   const openCategoryExplorer = (slug: string) => {
-    setSelectedCategorySlug(slug);
-    setActiveView('categories');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    React.startTransition(() => {
+      setSelectedCategorySlug(slug);
+      setVisibleCategoryCount(isDataSaverActive ? 12 : 24);
+      setActiveView('categories');
+    });
+    window.scrollTo(0, 0);
   };
 
   return (
@@ -694,17 +763,17 @@ export default function App() {
       {/* ====================================================================
           TOP BAR CONTRACT (3 Zones separated by gap-8)
       ==================================================================== */}
-      <header className="sticky top-0 z-40 w-full bg-[#09090B]/95 backdrop-blur-md border-b border-zinc-800/80">
+      <header className="sticky top-0 z-40 w-full bg-[#09090B]/95 md:backdrop-blur-md border-b border-zinc-800/80">
         <div className="max-w-[1440px] w-full mx-auto flex items-center justify-between gap-2 sm:gap-8 px-3.5 sm:px-8 py-3 sm:py-4">
           {/* Zone 1: Single text element wordmark */}
           <a
             href="#top"
             onClick={(e) => {
               e.preventDefault();
-              setActiveView('streaming');
               setRankingMode('rails');
               setTimeWindow('all');
               setSearchQuery('');
+              switchView('streaming');
             }}
             className="font-display text-lg sm:text-xl font-bold tracking-tight text-amber-400 whitespace-nowrap shrink-0"
           >
@@ -717,7 +786,7 @@ export default function App() {
               href="#streaming"
               onClick={(e) => {
                 e.preventDefault();
-                setActiveView('streaming');
+                switchView('streaming');
               }}
               className={`hover:text-zinc-100 transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'streaming'
@@ -731,7 +800,7 @@ export default function App() {
               href="#categories"
               onClick={(e) => {
                 e.preventDefault();
-                setActiveView('categories');
+                switchView('categories');
               }}
               className={`hover:text-zinc-100 transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'categories'
@@ -745,8 +814,7 @@ export default function App() {
               href="#ministers"
               onClick={(e) => {
                 e.preventDefault();
-                setSelectedChannelId(null);
-                setActiveView('ministers');
+                switchView('ministers', true);
               }}
               className={`hover:text-zinc-100 transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'ministers'
@@ -760,7 +828,7 @@ export default function App() {
               href="#movies"
               onClick={(e) => {
                 e.preventDefault();
-                setActiveView('movies');
+                switchView('movies');
               }}
               className={`hover:text-zinc-100 transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'movies'
@@ -774,7 +842,7 @@ export default function App() {
               href="#community"
               onClick={(e) => {
                 e.preventDefault();
-                setActiveView('community');
+                switchView('community');
               }}
               className={`hover:text-zinc-100 transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'community' || activeView === 'prayer'
@@ -786,8 +854,29 @@ export default function App() {
             </a>
           </nav>
 
-          {/* Zone 3: Search, Install & Primary Action */}
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+          {/* Zone 3: Data Saver, Install, Search & Primary Action */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleQuickToggleDataSaver}
+              aria-pressed={isDataSaverActive}
+              title={
+                isDataSaverActive
+                  ? `Data-Saver Mode is ON${deviceSaveData ? ' (device setting detected)' : ''}. Tap for Standard Quality.`
+                  : 'Turn on Data-Saver Mode for lighter thumbnails & lower mobile data usage.'
+              }
+              className={`inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                isDataSaverActive
+                  ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25'
+                  : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+              }`}
+            >
+              <Gauge className={`w-3.5 h-3.5 ${isDataSaverActive ? 'text-emerald-400' : 'text-zinc-400'}`} />
+              <span className="hidden sm:inline">{isDataSaverActive ? 'Data Saver' : 'Saver'}</span>
+              {isDataSaverActive && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 sm:hidden" />
+              )}
+            </button>
             <PWAInstallButton />
             <button
               type="button"
@@ -795,7 +884,7 @@ export default function App() {
                 setDiscoveryInitialScope('all');
                 setIsDiscoveryModalOpen(true);
               }}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors shadow-sm"
+              className="inline-flex items-center gap-2 px-2.5 sm:px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors shadow-sm"
               title="Intelligent Discovery & Search across KINGDOM+ Christian Library & Global Network (Shortcut: /)"
             >
               <Search className="w-3.5 h-3.5 text-amber-400" />
@@ -807,13 +896,20 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowAuthModal(true)}
-              className="px-3.5 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 rounded-lg hover:bg-amber-400 transition-colors whitespace-nowrap shrink-0"
+              className="px-3 sm:px-3.5 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 rounded-lg hover:bg-amber-400 transition-colors whitespace-nowrap shrink-0"
             >
               {currentUser ? `${currentUser.full_name.split(' ')[0]}'s Sanctuary` : 'Sign In'}
             </button>
           </div>
         </div>
       </header>
+
+      {dataSaverToast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-xl bg-zinc-900 border border-emerald-500/40 text-emerald-300 text-xs font-medium shadow-2xl flex items-center gap-2 max-w-[92vw] whitespace-nowrap">
+          <Gauge className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <span className="truncate">{dataSaverToast}</span>
+        </div>
+      )}
 
       {/* Admin Workspace Bar (Visible when signed in as Admin/Moderator) */}
       {isAdmin && (
@@ -851,7 +947,7 @@ export default function App() {
               <img
                 src={
                   currentHero
-                    ? currentHero.thumbnail_maxres_url || currentHero.thumbnail_high_url
+                    ? getOptimizedThumbnailUrl(currentHero, isDataSaverActive, 'hero')
                     : '/src/assets/images/kingdom_hero_sanctuary_backdrop_1794402594694.jpg'
                 }
                 alt={currentHero ? currentHero.title : 'KINGDOM+ Sanctuary'}
@@ -874,7 +970,7 @@ export default function App() {
               <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 sm:py-12 lg:py-16 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
                 <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-2.5 sm:gap-3.5">
                   {/* Concise 1-Line Kicker */}
-                  <div className="inline-flex self-start items-center flex-wrap gap-2 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-xs font-medium text-amber-400">
+                  <div className="inline-flex self-start items-center flex-wrap gap-2 px-2.5 py-1 rounded-full bg-black/70 border border-white/10 text-xs font-medium text-amber-400">
                     {currentHero?.is_live_now && currentHero.live_broadcast_content === 'live' ? (
                       <span className="inline-flex items-center gap-1.5 text-red-400 font-semibold">
                         <Radio className="w-3.5 h-3.5 animate-pulse" />
@@ -926,7 +1022,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={(e) => handleToggleSaveVideo(currentHero.id, e)}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl bg-black/60 backdrop-blur-md hover:bg-zinc-900 border border-white/15 text-zinc-100 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl bg-black/75 hover:bg-zinc-900 border border-white/15 text-zinc-100 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0"
                       >
                         {savedVideoIds.includes(currentHero.id) ? (
                           <>
@@ -946,27 +1042,24 @@ export default function App() {
 
                 {/* Right 4 Columns: Horizontal Swipeable on Mobile, Vertical Stack on Desktop */}
                 {heroCandidates.length > 1 && (
-                  <div className="lg:col-span-4 min-w-0 w-full flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/55 lg:backdrop-blur-md lg:border lg:border-white/10 rounded-xl lg:p-3">
+                  <div className="lg:col-span-4 min-w-0 w-full flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/65 lg:border lg:border-white/10 rounded-xl lg:p-3">
                     {heroCandidates.map((cand, idx) => (
                       <button
                         key={cand.id}
                         type="button"
                         onClick={() => setHeroIndex(idx)}
-                        className={`min-w-[220px] lg:min-w-0 lg:w-full text-left p-2 rounded-xl transition-colors flex items-center gap-2.5 shrink-0 backdrop-blur-md ${
+                        className={`min-w-[220px] lg:min-w-0 lg:w-full text-left p-2 rounded-xl transition-colors flex items-center gap-2.5 shrink-0 ${
                           idx === heroIndex
                             ? 'bg-amber-500/25 border border-amber-400/60 shadow-lg'
-                            : 'bg-black/60 lg:bg-transparent hover:bg-zinc-900/70 border border-white/10 lg:border-transparent'
+                            : 'bg-black/75 lg:bg-transparent hover:bg-zinc-900/70 border border-white/10 lg:border-transparent'
                         }`}
                       >
                         <img
-                          src={cand.thumbnail_maxres_url || cand.thumbnail_high_url}
+                          src={getOptimizedThumbnailUrl(cand, isDataSaverActive, 'mini')}
                           alt={cand.title}
+                          loading="lazy"
+                          decoding="async"
                           referrerPolicy="no-referrer"
-                          onError={(e) => {
-                            if (e.currentTarget.src !== cand.thumbnail_high_url) {
-                              e.currentTarget.src = cand.thumbnail_high_url;
-                            }
-                          }}
                           className="w-12 sm:w-14 aspect-video rounded-md object-cover bg-zinc-900 shrink-0"
                         />
                         <div className="min-w-0 flex-1">
@@ -1038,10 +1131,7 @@ export default function App() {
                   <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
                     <button
                       type="button"
-                      onClick={() => {
-                        setSelectedChannelId(null);
-                        setActiveView('ministers');
-                      }}
+                      onClick={() => switchView('ministers', true)}
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors whitespace-nowrap shrink-0"
                     >
                       <Users className="w-3.5 h-3.5 text-amber-400" />
@@ -1050,7 +1140,7 @@ export default function App() {
 
                     <button
                       type="button"
-                      onClick={() => setActiveView('movies')}
+                      onClick={() => switchView('movies')}
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-amber-400 transition-colors whitespace-nowrap shrink-0"
                     >
                       <Film className="w-3.5 h-3.5" />
@@ -1064,11 +1154,7 @@ export default function App() {
                     const count =
                       cat.slug === 'live-special-broadcasts'
                         ? activeLiveStreams.length
-                        : streamingVideos.filter(
-                            (v) =>
-                              v.primary_category_slug === cat.slug ||
-                              v.secondary_category_slugs.includes(cat.slug)
-                          ).length;
+                        : categoryCountsMap.get(cat.slug) || 0;
                     return (
                       <button
                         key={cat.id}
@@ -1135,10 +1221,7 @@ export default function App() {
               </h1>
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedChannelId(null);
-                  setActiveView('ministers');
-                }}
+                onClick={() => switchView('ministers', true)}
                 className="px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors shrink-0"
               >
                 Ministers ({ministerProfiles.length}) →
@@ -1150,7 +1233,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedCategorySlug('all');
+                  React.startTransition(() => {
+                    setSelectedCategorySlug('all');
+                    setVisibleCategoryCount(isDataSaverActive ? 12 : 24);
+                  });
                 }}
                 className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                   selectedCategorySlug === 'all'
@@ -1164,17 +1250,16 @@ export default function App() {
                 const count =
                   cat.slug === 'live-special-broadcasts'
                     ? activeLiveStreams.length
-                    : streamingVideos.filter(
-                        (v) =>
-                          v.primary_category_slug === cat.slug ||
-                          v.secondary_category_slugs.includes(cat.slug)
-                      ).length;
+                    : categoryCountsMap.get(cat.slug) || 0;
                 return (
                   <button
                     key={cat.id}
                     type="button"
                     onClick={() => {
-                      setSelectedCategorySlug(cat.slug);
+                      React.startTransition(() => {
+                        setSelectedCategorySlug(cat.slug);
+                        setVisibleCategoryCount(isDataSaverActive ? 12 : 24);
+                      });
                     }}
                     className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                       selectedCategorySlug === cat.slug
@@ -1356,8 +1441,10 @@ export default function App() {
                               }`}
                             >
                               <img
-                                src={teacher.avatar_url}
+                                src={getOptimizedAvatarUrl(teacher.avatar_url, isDataSaverActive)}
                                 alt={teacher.title}
+                                loading="lazy"
+                                decoding="async"
                                 referrerPolicy="no-referrer"
                                 className="w-7 h-7 rounded-full object-cover bg-zinc-800 shrink-0"
                               />
@@ -1491,18 +1578,37 @@ export default function App() {
                 );
               }
 
+              const visibleMatches = categoryMatches.slice(0, visibleCategoryCount);
+              const hasMoreCategoryVideos = categoryMatches.length > visibleMatches.length;
+
               return (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                  {categoryMatches.map((video) => (
-                    <VideoCard
-                      key={video.id}
-                      video={video}
-                      onSelect={handleRequestPlayVideo}
-                      isSaved={savedVideoIds.includes(video.id)}
-                      onToggleSave={handleToggleSaveVideo}
-                      onSelectChannel={openChannelCatalog}
-                    />
-                  ))}
+                <div className="flex flex-col gap-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    {visibleMatches.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        onSelect={handleRequestPlayVideo}
+                        isSaved={savedVideoIds.includes(video.id)}
+                        onToggleSave={handleToggleSaveVideo}
+                        onSelectChannel={openChannelCatalog}
+                      />
+                    ))}
+                  </div>
+
+                  {hasMoreCategoryVideos && (
+                    <div className="flex flex-col items-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVisibleCategoryCount((c) => c + (isDataSaverActive ? 12 : 24))
+                        }
+                        className="px-6 py-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/40 text-amber-300 text-xs sm:text-sm font-semibold transition-colors shadow-lg"
+                      >
+                        Load More Videos ({visibleMatches.length} of {categoryMatches.length})
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -1629,7 +1735,7 @@ export default function App() {
       ==================================================================== */}
       <nav
         aria-label="Mobile Bottom Navigation"
-        className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-[#09090B]/95 backdrop-blur-md border-t border-zinc-800/90 pb-safe"
+        className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-[#09090B]/95 border-t border-zinc-800/90 pb-safe"
       >
         <div className="grid grid-cols-5 items-center h-16 px-1">
           {[
@@ -1647,11 +1753,7 @@ export default function App() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => {
-                  if (tab.id === 'ministers') setSelectedChannelId(null);
-                  setActiveView(tab.id as NavView);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
+                onClick={() => switchView(tab.id as NavView, tab.id === 'ministers')}
                 className={`flex flex-col items-center justify-center min-h-[48px] py-1.5 transition-colors ${
                   isActive ? 'text-amber-400 font-semibold' : 'text-zinc-400 hover:text-zinc-200'
                 }`}
@@ -1667,7 +1769,7 @@ export default function App() {
       </nav>
 
       {/* ====================================================================
-          OFFICIAL YOUTUBE IFRAME PLAYER THEATER & FLOATING MINI-PLAYER
+          KINGDOM+ STREAM PLAYER THEATER & FLOATING MINI-PLAYER
       ==================================================================== */}
       {activeVideo && (
         <YouTubePlayerModal
@@ -1695,9 +1797,7 @@ export default function App() {
           onRequireAuth={() => setShowAuthModal(true)}
           onNavigateWhileListening={(dest) => {
             setIsPlayerMinimized(true);
-            if (dest === 'ministers') setSelectedChannelId(null);
-            setActiveView(dest);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            switchView(dest, dest === 'ministers');
           }}
           onOpenChannelWhileListening={(channelId) => {
             setIsPlayerMinimized(true);

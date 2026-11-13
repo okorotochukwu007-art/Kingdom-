@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LogOut, Play, Shield, User, X } from 'lucide-react';
+import { Gauge, LogOut, Play, Shield, User, X } from 'lucide-react';
 import { ContentCategory, KingdomVideo, UserProfile, WatchHistoryEntry } from '../types/kingdom.ts';
 import { VideoCard } from './VideoCard.tsx';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
@@ -9,6 +9,8 @@ import {
   resetUserPassword,
   updateProfile,
 } from '../utils/authService.ts';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
+import { DataSaverPreference } from '../utils/dataSaver.ts';
 
 interface AuthAndProfileModalProps {
   currentUser: UserProfile | null;
@@ -55,6 +57,13 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
   const [editBio, setEditBio] = useState(currentUser?.bio || '');
   const [editLocation, setEditLocation] = useState(currentUser?.location || '');
   const [editChurch, setEditChurch] = useState(currentUser?.denomination_or_church || '');
+  const {
+    preference: dataSaverPreference,
+    isDataSaverActive,
+    deviceSaveData,
+    effectiveType,
+    setPreference: setDataSaverPreference,
+  } = useDataSaver();
   const [favCategories, setFavCategories] = useState<string[]>(
     currentUser?.preferences?.favoriteCategories || []
   );
@@ -500,6 +509,61 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
                     })}
                   </div>
                 </div>
+                {/* Mobile Data-Saver Preference Card */}
+                <div className="p-3.5 rounded-xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Gauge
+                        className={`w-4 h-4 ${
+                          isDataSaverActive ? 'text-emerald-400' : 'text-amber-400'
+                        }`}
+                      />
+                      <span className="text-xs font-semibold text-zinc-100">
+                        Mobile Data-Saver Mode
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                        isDataSaverActive
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-zinc-800 text-zinc-400'
+                      }`}
+                    >
+                      {isDataSaverActive ? 'Active' : 'Standard HD'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Loads lighter 16:9 thumbnails, requests 360p/480p stream quality, and reduces background network checks.
+                    {deviceSaveData
+                      ? ' Your device Data Saver is currently enabled.'
+                      : effectiveType
+                      ? ` Current connection: ${effectiveType.toUpperCase()}.`
+                      : ''}
+                  </p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        { id: 'auto', label: 'Auto (Device)' },
+                        { id: 'on', label: 'Always On' },
+                        { id: 'off', label: 'Standard HD' },
+                      ] as { id: DataSaverPreference; label: string }[]
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setDataSaverPreference(opt.id)}
+                        className={`py-2 px-2 rounded-lg text-[11px] font-medium border transition-colors ${
+                          dataSaverPreference === opt.id
+                            ? 'bg-amber-500 text-zinc-950 border-amber-400 font-semibold'
+                            : 'bg-zinc-950/60 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="flex justify-end">
                   <button
                     type="submit"

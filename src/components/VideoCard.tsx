@@ -6,6 +6,11 @@ import {
   formatDurationSeconds,
   formatRelativeDate,
 } from '../utils/formatters.ts';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
+import {
+  getOptimizedAvatarUrl,
+  getOptimizedThumbnailUrl,
+} from '../utils/dataSaver.ts';
 
 interface VideoCardProps {
   video: KingdomVideo;
@@ -17,7 +22,7 @@ interface VideoCardProps {
   onSelectChannel?: (channelId: string) => void;
 }
 
-export const VideoCard: React.FC<VideoCardProps> = ({
+const VideoCardComponent: React.FC<VideoCardProps> = ({
   video,
   onSelect,
   isSaved,
@@ -28,6 +33,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
 }) => {
   const [imgError, setImgError] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
+  const { isDataSaverActive } = useDataSaver();
 
   const isGenuinelyLive = Boolean(
     video.is_live_now && video.live_broadcast_content === 'live'
@@ -51,26 +57,33 @@ export const VideoCard: React.FC<VideoCardProps> = ({
       ? video.subcategory_label
       : video.primary_category_name;
 
+  const cardThumbSrc = getOptimizedThumbnailUrl(video, isDataSaverActive, 'card');
+  const avatarSrc = getOptimizedAvatarUrl(video.channel_avatar_url, isDataSaverActive);
+
   return (
     <article
       onClick={() => onSelect(video)}
-      className="group cursor-pointer flex flex-col bg-[#121215] border border-zinc-800/80 rounded-2xl overflow-hidden transition-transform duration-150 hover:-translate-y-0.5 hover:border-amber-500/40 active:scale-[0.99]"
+      className="group cursor-pointer flex flex-col bg-[#121215] border border-zinc-800/80 rounded-2xl overflow-hidden transition-colors duration-150 hover:border-amber-500/40 active:scale-[0.99]"
     >
       {/* 16:9 Thumbnail Frame */}
       <div className="relative aspect-video w-full bg-zinc-900 overflow-hidden">
-        {!imgError ? (
+        {!imgError && cardThumbSrc ? (
           <img
-            src={video.thumbnail_maxres_url || video.thumbnail_high_url}
+            src={cardThumbSrc}
             alt={video.title}
+            loading="lazy"
+            decoding="async"
             referrerPolicy="no-referrer"
             onError={(e) => {
-              if (e.currentTarget.src !== video.thumbnail_high_url && video.thumbnail_high_url) {
-                e.currentTarget.src = video.thumbnail_high_url;
+              const target = e.currentTarget;
+              const fallbackUrl = video.thumbnail_high_url || video.thumbnail_maxres_url;
+              if (fallbackUrl && target.src !== fallbackUrl) {
+                target.src = fallbackUrl;
               } else {
                 setImgError(true);
               }
             }}
-            className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+            className="w-full h-full object-cover md:transition-transform md:duration-200 md:group-hover:scale-105"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-zinc-900 via-zinc-950 to-amber-950/30 p-4 text-center">
@@ -82,8 +95,8 @@ export const VideoCard: React.FC<VideoCardProps> = ({
         {/* Crisp subtle bottom-edge scrim so thumbnails stay bright & vibrant */}
         <div className="absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/65 to-transparent pointer-events-none" />
 
-        {/* Play overlay button on hover */}
-        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+        {/* Play overlay button on desktop hover */}
+        <div className="hidden md:flex absolute inset-0 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150">
           <div className="w-11 h-11 rounded-full bg-amber-500 text-zinc-950 flex items-center justify-center shadow-lg">
             <Play className="w-5 h-5 fill-current ml-0.5" />
           </div>
@@ -102,7 +115,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           type="button"
           onClick={(e) => onToggleSave(video.id, e)}
           title={isSaved ? 'Remove from Saved Videos' : 'Save to Watchlist'}
-          className="absolute top-2.5 right-2.5 w-9 h-9 rounded-xl bg-black/70 hover:bg-black/90 text-zinc-200 flex items-center justify-center transition-colors z-10"
+          className="absolute top-2.5 right-2.5 w-9 h-9 rounded-xl bg-black/75 hover:bg-black/90 text-zinc-200 flex items-center justify-center transition-colors z-10"
         >
           {isSaved ? (
             <Check className="w-4 h-4 text-amber-400" />
@@ -113,7 +126,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
 
         {/* Bottom-right duration text if recorded */}
         {!isGenuinelyLive && durationText && (
-          <span className="absolute bottom-2 right-2.5 text-[11px] font-mono tabular-nums text-zinc-100 bg-black/75 px-1.5 py-0.5 rounded">
+          <span className="absolute bottom-2 right-2.5 text-[11px] font-mono tabular-nums text-zinc-100 bg-black/80 px-1.5 py-0.5 rounded">
             {durationText}
           </span>
         )}
@@ -144,10 +157,12 @@ export const VideoCard: React.FC<VideoCardProps> = ({
         <div className="pt-2 border-t border-zinc-800/70 flex items-center justify-between gap-2">
           {/* Minister / Artist Attribution */}
           <div className="flex items-center gap-2 min-w-0">
-            {!avatarError && video.channel_avatar_url ? (
+            {!avatarError && avatarSrc ? (
               <img
-                src={video.channel_avatar_url}
+                src={avatarSrc}
                 alt={video.artist_name || video.channel_title}
+                loading="lazy"
+                decoding="async"
                 referrerPolicy="no-referrer"
                 onError={() => setAvatarError(true)}
                 className="w-5 h-5 rounded-full object-cover bg-zinc-800 shrink-0"
@@ -184,3 +199,5 @@ export const VideoCard: React.FC<VideoCardProps> = ({
     </article>
   );
 };
+
+export const VideoCard = React.memo(VideoCardComponent);

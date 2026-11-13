@@ -14,7 +14,6 @@
     overflow-x: clip;
     -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
-    scroll-behavior: smooth;
   }
 
   body, #root {
@@ -38,6 +37,7 @@
   }
 
   /* Guarantee every video stream iframe matches 100% of its device-fitted frame */
+  #kp-player-stage iframe,
   iframe[id^="kp-stream-"] {
     position: absolute !important;
     inset: 0 !important;

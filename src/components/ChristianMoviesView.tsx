@@ -26,6 +26,11 @@ import {
 } from '../utils/formatters.ts';
 import { VideoCard } from './VideoCard.tsx';
 import { GlobalChristianSearchSection } from './GlobalChristianSearchSection.tsx';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
+import {
+  getOptimizedAvatarUrl,
+  getOptimizedThumbnailUrl,
+} from '../utils/dataSaver.ts';
 
 interface ChristianMoviesViewProps {
   categories: ContentCategory[];
@@ -69,12 +74,16 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
   onToggleSave,
   onDiscoveredVideoSelected,
 }) => {
+  const { isDataSaverActive } = useDataSaver();
   const [selectedCategorySlug, setSelectedCategorySlug] = useState<string>('all');
   const [selectedStudioId, setSelectedStudioId] = useState<string | null>(null);
   const [selectedGenreId, setSelectedGenreId] = useState<string>('all');
   const [sortLens, setSortLens] = useState<MovieSortLens>('high_impression_recent');
   const [searchQuery, setSearchQuery] = useState('');
   const [heroIndex, setHeroIndex] = useState(0);
+  const [visibleMovieCount, setVisibleMovieCount] = useState<number>(() =>
+    isDataSaverActive ? 12 : 24
+  );
 
   // Beyond-library YouTube movie discovery state
   const [discoveredMovies, setDiscoveredMovies] = useState<KingdomVideo[]>([]);
@@ -265,7 +274,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
         <img
           src={
             currentHero
-              ? currentHero.thumbnail_maxres_url || currentHero.thumbnail_high_url
+              ? getOptimizedThumbnailUrl(currentHero, isDataSaverActive, 'hero')
               : '/src/assets/images/worship_acoustic_hall_1794402597118.jpg'
           }
           alt={currentHero ? currentHero.title : 'KINGDOM+ Christian Movies'}
@@ -350,7 +359,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
 
           {/* Right 4 Columns: Top High-Impression Movie Lineup (Swipeable on mobile) */}
           {heroMovies.length > 1 && (
-            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/55 backdrop-blur-md border border-zinc-800/80 rounded-xl p-2.5 sm:p-3.5">
+            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/70 border border-zinc-800/80 rounded-xl p-2.5 sm:p-3.5">
               <div className="text-[11px] font-medium text-zinc-400 px-1 pb-0.5">
                 Featured Movies ({heroIndex + 1}/{heroMovies.length})
               </div>
@@ -367,8 +376,10 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                     }`}
                   >
                     <img
-                      src={cand.thumbnail_high_url}
+                      src={getOptimizedThumbnailUrl(cand, isDataSaverActive, 'mini')}
                       alt={cand.title}
+                      loading="lazy"
+                      decoding="async"
                       referrerPolicy="no-referrer"
                       className="w-14 aspect-video rounded object-cover bg-zinc-900 shrink-0"
                     />
@@ -637,8 +648,10 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                   }`}
                 >
                   <img
-                    src={studio.avatar_url}
+                    src={getOptimizedAvatarUrl(studio.avatar_url, isDataSaverActive)}
                     alt={studio.title}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                     className="w-5 h-5 rounded-full object-cover bg-zinc-800"
                   />
@@ -675,8 +688,8 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-              {filteredMovies.map((video) => (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+              {filteredMovies.slice(0, visibleMovieCount).map((video) => (
                 <VideoCard
                   key={video.id}
                   video={video}
@@ -687,6 +700,19 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                 />
               ))}
             </div>
+            {filteredMovies.length > visibleMovieCount && (
+              <div className="flex justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVisibleMovieCount((c) => c + (isDataSaverActive ? 12 : 24))
+                  }
+                  className="px-6 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/40 text-amber-300 text-xs font-semibold"
+                >
+                  Load More Movies ({Math.min(visibleMovieCount, filteredMovies.length)} of {filteredMovies.length})
+                </button>
+              </div>
+            )}
           </section>
         ) : (
           <div className="flex flex-col gap-8 sm:gap-10">
@@ -748,7 +774,8 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                       type="button"
                       onClick={() => {
                         setSelectedCategorySlug(cat.slug);
-                        window.scrollTo({ top: 320, behavior: 'smooth' });
+                        setVisibleMovieCount(24);
+                        window.scrollTo(0, 320);
                       }}
                       className="inline-flex items-center gap-1 text-xs font-medium text-zinc-400 hover:text-amber-400 whitespace-nowrap shrink-0"
                     >

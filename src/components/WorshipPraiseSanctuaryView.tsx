@@ -16,6 +16,11 @@ import {
 } from '../types/kingdom.ts';
 import { formatCompactNumber } from '../utils/formatters.ts';
 import { VideoCard } from './VideoCard.tsx';
+import { useDataSaver } from '../hooks/useDataSaver.ts';
+import {
+  getOptimizedAvatarUrl,
+  getOptimizedThumbnailUrl,
+} from '../utils/dataSaver.ts';
 
 interface WorshipPraiseSanctuaryViewProps {
   videos: KingdomVideo[];
@@ -117,6 +122,7 @@ export const WorshipPraiseSanctuaryView: React.FC<WorshipPraiseSanctuaryViewProp
   onToggleSave,
   onSelectChannel,
 }) => {
+  const { isDataSaverActive } = useDataSaver();
   const [worshipSearchQuery, setWorshipSearchQuery] = useState('');
   const [selectedArtistChannelId, setSelectedArtistChannelId] = useState<string | null>(null);
   const [artistRegionFilter, setArtistRegionFilter] = useState<ArtistRegionFilter>('all');
@@ -125,6 +131,9 @@ export const WorshipPraiseSanctuaryView: React.FC<WorshipPraiseSanctuaryViewProp
   >('all');
   const [sortMode, setSortMode] = useState<WorshipSortMode>('most_popular');
   const [showAllArtistsGrid, setShowAllArtistsGrid] = useState(false);
+  const [visibleWorshipCount, setVisibleWorshipCount] = useState<number>(() =>
+    isDataSaverActive ? 12 : 24
+  );
 
   const activeSubcategories = useMemo(() => {
     const source =
@@ -398,8 +407,8 @@ export const WorshipPraiseSanctuaryView: React.FC<WorshipPraiseSanctuaryViewProp
               const isSelected = selectedArtistChannelId === artist.id;
               const displayName = artist.speaker_name || artist.title;
               const avatarSrc =
-                artist.avatar_url ||
-                stats.topVideo?.thumbnail_high_url ||
+                getOptimizedAvatarUrl(artist.avatar_url, isDataSaverActive) ||
+                getOptimizedThumbnailUrl(stats.topVideo, isDataSaverActive, 'mini') ||
                 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=240&auto=format&fit=crop&q=80';
 
               return (
@@ -420,6 +429,8 @@ export const WorshipPraiseSanctuaryView: React.FC<WorshipPraiseSanctuaryViewProp
                   <img
                     src={avatarSrc}
                     alt={displayName}
+                    loading="lazy"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                     className="w-8 h-8 rounded-full object-cover bg-zinc-800 shrink-0 border border-zinc-700/70"
                   />
@@ -516,8 +527,12 @@ export const WorshipPraiseSanctuaryView: React.FC<WorshipPraiseSanctuaryViewProp
           <div className="flex items-center gap-3.5 min-w-0">
             <img
               src={
-                selectedArtist.avatar_url ||
-                artistStatsMap.get(selectedArtist.id)?.topVideo?.thumbnail_high_url ||
+                getOptimizedAvatarUrl(selectedArtist.avatar_url, isDataSaverActive) ||
+                getOptimizedThumbnailUrl(
+                  artistStatsMap.get(selectedArtist.id)?.topVideo,
+                  isDataSaverActive,
+                  'mini'
+                ) ||
                 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=240&auto=format&fit=crop&q=80'
               }
               alt={selectedArtist.speaker_name || selectedArtist.title}
@@ -635,17 +650,32 @@ export const WorshipPraiseSanctuaryView: React.FC<WorshipPraiseSanctuaryViewProp
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-              {filteredWorshipVideos.map((video) => (
-                <VideoCard
-                  key={video.id}
-                  video={video}
-                  onSelect={onSelectVideo}
-                  isSaved={savedVideoIds.includes(video.id)}
-                  onToggleSave={onToggleSave}
-                  onSelectChannel={(chId) => setSelectedArtistChannelId(chId)}
-                />
-              ))}
+            <div className="flex flex-col gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                {filteredWorshipVideos.slice(0, visibleWorshipCount).map((video) => (
+                  <VideoCard
+                    key={video.id}
+                    video={video}
+                    onSelect={onSelectVideo}
+                    isSaved={savedVideoIds.includes(video.id)}
+                    onToggleSave={onToggleSave}
+                    onSelectChannel={(chId) => setSelectedArtistChannelId(chId)}
+                  />
+                ))}
+              </div>
+              {filteredWorshipVideos.length > visibleWorshipCount && (
+                <div className="flex justify-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVisibleWorshipCount((c) => c + (isDataSaverActive ? 12 : 24))
+                    }
+                    className="px-6 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/40 text-amber-300 text-xs font-semibold"
+                  >
+                    Load More Worship Videos ({Math.min(visibleWorshipCount, filteredWorshipVideos.length)} of {filteredWorshipVideos.length})
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
