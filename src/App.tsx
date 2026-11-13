@@ -846,12 +846,12 @@ export default function App() {
         {/* 1. STREAMING HOMEPAGE */}
         {activeView === 'streaming' && (
           <div className="flex flex-col gap-6 sm:gap-10 pb-12 sm:pb-16">
-            {/* CINEMATIC HERO SPOTLIGHT (COMPACT ON MOBILE, EXPANDED ON DESKTOP) */}
-            <section className="relative w-full min-h-[360px] sm:min-h-[460px] lg:min-h-[540px] border-b border-zinc-800/80 flex items-end overflow-hidden bg-zinc-950">
+            {/* CINEMATIC HERO SPOTLIGHT (CRYSTAL-CLEAR HD BACKDROP ON MOBILE & DESKTOP) */}
+            <section className="relative w-full min-h-[410px] sm:min-h-[470px] lg:min-h-[540px] border-b border-zinc-800/80 flex items-end overflow-hidden bg-[#09090B]">
               <img
                 src={
                   currentHero
-                    ? currentHero.thumbnail_maxres_url
+                    ? currentHero.thumbnail_maxres_url || currentHero.thumbnail_high_url
                     : '/src/assets/images/kingdom_hero_sanctuary_backdrop_1794402594694.jpg'
                 }
                 alt={currentHero ? currentHero.title : 'KINGDOM+ Sanctuary'}
@@ -865,16 +865,16 @@ export default function App() {
                       '/src/assets/images/kingdom_hero_sanctuary_backdrop_1794402594694.jpg';
                   }
                 }}
-                className="absolute inset-0 w-full h-full object-cover opacity-50 scale-105 transition-all duration-700"
+                className="absolute inset-0 w-full h-full object-cover object-center opacity-95 sm:opacity-85 transition-opacity duration-500"
               />
-              {/* Measured Contrast Scrims */}
-              <div className="absolute inset-0 bg-gradient-to-r from-[#09090B] via-[#09090B]/85 to-transparent" />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/40 to-black/30" />
+              {/* Desktop-only subtle left scrim + Clean lower-third readability scrim so upper backdrop stays razor-sharp & vibrant on mobile */}
+              <div className="hidden lg:block absolute inset-0 bg-gradient-to-r from-[#09090B]/90 via-[#09090B]/55 to-transparent" />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/65 via-40% to-transparent" />
 
               <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 sm:py-12 lg:py-16 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
                 <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-2.5 sm:gap-3.5">
                   {/* Concise 1-Line Kicker */}
-                  <div className="flex items-center flex-wrap gap-2 text-xs font-medium text-amber-400">
+                  <div className="inline-flex self-start items-center flex-wrap gap-2 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-xs font-medium text-amber-400">
                     {currentHero?.is_live_now && currentHero.live_broadcast_content === 'live' ? (
                       <span className="inline-flex items-center gap-1.5 text-red-400 font-semibold">
                         <Radio className="w-3.5 h-3.5 animate-pulse" />
@@ -885,8 +885,8 @@ export default function App() {
                     )}
                     {currentHero && (
                       <>
-                        <span aria-hidden="true" className="text-zinc-600">·</span>
-                        <span className="text-zinc-200">
+                        <span aria-hidden="true" className="text-zinc-500">·</span>
+                        <span className="text-zinc-100">
                           {currentHero.artist_name || currentHero.channel_title}
                         </span>
                       </>
@@ -894,7 +894,7 @@ export default function App() {
                   </div>
 
                   <h1
-                    className="font-display text-2xl sm:text-4xl lg:text-5xl font-semibold text-zinc-50 leading-[1.15] tracking-tight max-w-3xl line-clamp-2 sm:line-clamp-3"
+                    className="font-display text-2xl sm:text-4xl lg:text-5xl font-semibold text-white leading-[1.15] tracking-tight max-w-3xl line-clamp-2 sm:line-clamp-3 drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]"
                     style={{ textWrap: 'balance' }}
                   >
                     {currentHero
@@ -903,10 +903,10 @@ export default function App() {
                   </h1>
 
                   {currentHero && (
-                    <div className="flex items-center flex-wrap gap-x-2.5 gap-y-1 text-xs font-mono tabular-nums text-zinc-300">
+                    <div className="flex items-center flex-wrap gap-x-2.5 gap-y-1 text-xs font-mono tabular-nums text-zinc-200 drop-shadow">
                       <span>{formatCompactNumber(currentHero.view_count)} views</span>
                       <span aria-hidden="true">·</span>
-                      <span className="font-sans text-zinc-400">
+                      <span className="font-sans text-zinc-300">
                         {formatRelativeDate(currentHero.published_at)}
                       </span>
                     </div>
@@ -917,7 +917,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => handleRequestPlayVideo(currentHero)}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 shadow-lg"
+                        className="inline-flex items-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 shadow-[0_8px_24px_rgba(245,158,11,0.35)] active:scale-95"
                       >
                         <Play className="w-4 h-4 fill-current" />
                         <span>Watch Now</span>
@@ -926,7 +926,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={(e) => handleToggleSaveVideo(currentHero.id, e)}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-100 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl bg-black/60 backdrop-blur-md hover:bg-zinc-900 border border-white/15 text-zinc-100 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0"
                       >
                         {savedVideoIds.includes(currentHero.id) ? (
                           <>
@@ -946,29 +946,34 @@ export default function App() {
 
                 {/* Right 4 Columns: Horizontal Swipeable on Mobile, Vertical Stack on Desktop */}
                 {heroCandidates.length > 1 && (
-                  <div className="lg:col-span-4 min-w-0 w-full flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/55 lg:backdrop-blur-md lg:border lg:border-zinc-800/80 rounded-xl lg:p-3">
+                  <div className="lg:col-span-4 min-w-0 w-full flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/55 lg:backdrop-blur-md lg:border lg:border-white/10 rounded-xl lg:p-3">
                     {heroCandidates.map((cand, idx) => (
                       <button
                         key={cand.id}
                         type="button"
                         onClick={() => setHeroIndex(idx)}
-                        className={`min-w-[220px] lg:min-w-0 lg:w-full text-left p-2 rounded-lg transition-colors flex items-center gap-2.5 shrink-0 ${
+                        className={`min-w-[220px] lg:min-w-0 lg:w-full text-left p-2 rounded-xl transition-colors flex items-center gap-2.5 shrink-0 backdrop-blur-md ${
                           idx === heroIndex
-                            ? 'bg-amber-500/20 border border-amber-500/50'
-                            : 'bg-zinc-900/80 lg:bg-transparent hover:bg-zinc-900/70 border border-zinc-800/80 lg:border-transparent'
+                            ? 'bg-amber-500/25 border border-amber-400/60 shadow-lg'
+                            : 'bg-black/60 lg:bg-transparent hover:bg-zinc-900/70 border border-white/10 lg:border-transparent'
                         }`}
                       >
                         <img
-                          src={cand.thumbnail_high_url}
+                          src={cand.thumbnail_maxres_url || cand.thumbnail_high_url}
                           alt={cand.title}
                           referrerPolicy="no-referrer"
-                          className="w-12 sm:w-14 aspect-video rounded object-cover bg-zinc-900 shrink-0"
+                          onError={(e) => {
+                            if (e.currentTarget.src !== cand.thumbnail_high_url) {
+                              e.currentTarget.src = cand.thumbnail_high_url;
+                            }
+                          }}
+                          className="w-12 sm:w-14 aspect-video rounded-md object-cover bg-zinc-900 shrink-0"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-medium text-zinc-100 truncate">
                             {cand.title}
                           </div>
-                          <div className="text-[10px] text-zinc-400 truncate font-mono tabular-nums">
+                          <div className="text-[10px] text-zinc-300 truncate font-mono tabular-nums">
                             {cand.channel_title}
                           </div>
                         </div>

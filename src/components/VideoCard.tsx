@@ -60,10 +60,16 @@ export const VideoCard: React.FC<VideoCardProps> = ({
       <div className="relative aspect-video w-full bg-zinc-900 overflow-hidden">
         {!imgError ? (
           <img
-            src={video.thumbnail_high_url}
+            src={video.thumbnail_maxres_url || video.thumbnail_high_url}
             alt={video.title}
             referrerPolicy="no-referrer"
-            onError={() => setImgError(true)}
+            onError={(e) => {
+              if (e.currentTarget.src !== video.thumbnail_high_url && video.thumbnail_high_url) {
+                e.currentTarget.src = video.thumbnail_high_url;
+              } else {
+                setImgError(true);
+              }
+            }}
             className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
           />
         ) : (
@@ -73,8 +79,8 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           </div>
         )}
 
-        {/* Measured gradient scrim */}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-transparent opacity-80 group-hover:opacity-95 transition-opacity" />
+        {/* Crisp subtle bottom-edge scrim so thumbnails stay bright & vibrant */}
+        <div className="absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/65 to-transparent pointer-events-none" />
 
         {/* Play overlay button on hover */}
         <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150">

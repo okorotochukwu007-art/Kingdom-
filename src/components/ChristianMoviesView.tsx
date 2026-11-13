@@ -261,11 +261,11 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
       {/* ====================================================================
           CHRISTIAN MOVIES & BIBLE CINEMA HERO SPOTLIGHT
       ==================================================================== */}
-      <section className="relative w-full min-h-[340px] sm:min-h-[440px] lg:min-h-[500px] border-b border-zinc-800/80 flex items-end overflow-hidden bg-zinc-950">
+      <section className="relative w-full min-h-[380px] sm:min-h-[450px] lg:min-h-[500px] border-b border-zinc-800/80 flex items-end overflow-hidden bg-[#09090B]">
         <img
           src={
             currentHero
-              ? currentHero.thumbnail_maxres_url
+              ? currentHero.thumbnail_maxres_url || currentHero.thumbnail_high_url
               : '/src/assets/images/worship_acoustic_hall_1794402597118.jpg'
           }
           alt={currentHero ? currentHero.title : 'KINGDOM+ Christian Movies'}
@@ -278,10 +278,10 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
               target.src = '/src/assets/images/worship_acoustic_hall_1794402597118.jpg';
             }
           }}
-          className="absolute inset-0 w-full h-full object-cover opacity-50 scale-105 transition-all duration-700"
+          className="absolute inset-0 w-full h-full object-cover object-center opacity-95 sm:opacity-85 transition-opacity duration-500"
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#09090B] via-[#09090B]/85 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/45 to-black/30" />
+        <div className="hidden lg:block absolute inset-0 bg-gradient-to-r from-[#09090B]/90 via-[#09090B]/55 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/65 via-40% to-transparent" />
 
         <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-7 sm:py-12 lg:py-14 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
           <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-3">

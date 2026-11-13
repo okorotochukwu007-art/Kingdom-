@@ -199,7 +199,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     }
     introShieldTimerRef.current = window.setTimeout(() => {
       setIntroBannerShieldActive(false);
-    }, 4500);
+    }, 3600);
 
     if (withWarmupCurtain) {
       setIsStreamWarmingUp(true);
@@ -208,7 +208,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       }
       warmupTimerRef.current = window.setTimeout(() => {
         setIsStreamWarmingUp(false);
-      }, 1500);
+      }, 1200);
     }
   }, []);
 
@@ -342,6 +342,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       rel: '0',
       modestbranding: '1',
       iv_load_policy: '3',
+      vq: 'hd1080',
       cc_load_policy: captionsEnabled ? '1' : '0',
       cc_lang_pref: 'en',
       hl: 'en',
@@ -388,6 +389,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                 const dur = player?.getDuration?.() || video.duration_seconds || 0;
                 if (dur > 0) setDuration(dur);
                 setIsMuted(Boolean(player?.isMuted?.()));
+                player?.setPlaybackQuality?.('hd1080');
                 player?.playVideo?.();
               } catch {}
 
@@ -418,6 +420,9 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
               if (state === 1 || state === 3) {
                 setIsPlaying(true);
                 setHasStartedPlayback(true);
+                try {
+                  event.target?.setPlaybackQuality?.('hd1080');
+                } catch {}
               } else if (state === 2 || state === 5 || state === -1) {
                 setIsPlaying(false);
               } else if (state === 0) {
@@ -1004,19 +1009,17 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       </div>
                     )}
 
-                    {/* Dynamic Top Edge Shield: Completely masks external title/share intro banner while starting or resuming */}
+                    {/* Intro Banner Mask: Active ONLY during the brief 3.6s embed banner flash, then completely disappears (opacity-0) so ZERO shadow covers the video! */}
                     <div
-                      className={`absolute top-0 inset-x-0 pointer-events-none transition-all duration-500 ${
-                        introBannerShieldActive
-                          ? 'h-[68px] sm:h-[78px] bg-gradient-to-b from-black via-[#060608] via-75% to-transparent'
-                          : 'h-12 sm:h-14 bg-gradient-to-b from-black via-black/90 via-50% to-transparent'
+                      className={`absolute top-0 inset-x-0 h-[56px] sm:h-[66px] bg-gradient-to-b from-[#060608] via-[#060608]/85 to-transparent pointer-events-none transition-opacity duration-500 ${
+                        isPlaying && introBannerShieldActive ? 'opacity-100' : 'opacity-0'
                       }`}
                     />
 
-                    {/* Bottom-Right Corner KINGDOM+ Network Bug Shield: Masks external corner watermark without touching center captions */}
+                    {/* Crisp flush corner mark in extreme bottom-right ONLY (Zero dark gradient shadow bleeding into the video) */}
                     {!isCompactMini && (
-                      <div className="absolute bottom-0 right-0 w-32 sm:w-36 h-10 sm:h-11 bg-gradient-to-tl from-[#050507] via-[#050507] via-72% to-transparent flex items-end justify-end px-2.5 py-1.5 pointer-events-none">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-black/85 border border-zinc-800/80 text-[9px] font-display font-bold tracking-widest text-zinc-300">
+                      <div className="absolute bottom-0 right-0 w-[86px] sm:w-[98px] h-[26px] sm:h-[30px] bg-[#09090B] rounded-tl-md flex items-center justify-center pointer-events-none">
+                        <span className="inline-flex items-center gap-1 text-[9px] font-display font-bold tracking-widest text-zinc-300">
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                           KINGDOM+
                         </span>
@@ -1047,10 +1050,10 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     onContextMenu={(e) => e.preventDefault()}
                     className="absolute inset-0 z-10 cursor-pointer flex flex-col justify-between"
                   >
-                    {/* Top HUD Strip (Auto-hides while playing for 100% distraction-free video) */}
+                    {/* Top HUD Strip (Completely transparent & hidden while playing; light gradient ONLY when tapped) */}
                     {!isCompactMini && (
                       <div
-                        className={`flex items-center justify-between gap-2 p-2.5 sm:p-3.5 bg-gradient-to-b from-black/80 via-black/35 to-transparent transition-opacity duration-300 ${
+                        className={`flex items-center justify-between gap-2 p-2.5 sm:p-3.5 bg-gradient-to-b from-black/55 to-transparent transition-opacity duration-300 ${
                           !isPlaying || controlsVisible
                             ? 'opacity-100'
                             : 'opacity-0 pointer-events-none'
