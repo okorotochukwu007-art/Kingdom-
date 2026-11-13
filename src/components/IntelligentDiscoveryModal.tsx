@@ -313,7 +313,7 @@ export const IntelligentDiscoveryModal: React.FC<IntelligentDiscoveryModalProps>
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Search across our entire library and discover any Christian movie, minister, sermon, worship or prayer from YouTube
+                  Search across our entire library and discover any Christian movie, minister, sermon, worship or prayer worldwide
                 </p>
               </div>
             </div>
@@ -478,7 +478,7 @@ export const IntelligentDiscoveryModal: React.FC<IntelligentDiscoveryModalProps>
             <div className="p-12 text-center flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
               <p className="text-sm text-zinc-300 font-medium">
-                Searching in-app library and scanning public Christian ministries across YouTube...
+                Searching in-app library and scanning global Christian ministries...
               </p>
               <p className="text-xs text-zinc-500">
                 Understanding search intent and retrieving authentic teachings, worship, and faith cinema
@@ -515,7 +515,7 @@ export const IntelligentDiscoveryModal: React.FC<IntelligentDiscoveryModalProps>
                       <span className="text-xs font-mono text-amber-400 uppercase tracking-wider">
                         {data.discoveredMinister.isCuratedInApp
                           ? 'Featured Ministry'
-                          : 'Discovered Ministry from YouTube'}
+                          : 'Global Discovered Ministry'}
                       </span>
                       <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
                     </div>
@@ -648,7 +648,7 @@ export const IntelligentDiscoveryModal: React.FC<IntelligentDiscoveryModalProps>
                 <div className="flex items-center gap-2">
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-zinc-800 text-amber-300 border border-amber-500/30 flex items-center gap-1">
                     <Compass className="w-3 h-3 text-amber-400" />
-                    <span>Public YouTube Discovery</span>
+                    <span>Global Network Discovery</span>
                   </span>
                   <h3 className="text-sm sm:text-base font-semibold text-zinc-100">
                     Expanded Christian Matches ({data.discoveredVideos.length})

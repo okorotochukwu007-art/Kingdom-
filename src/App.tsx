@@ -796,7 +796,7 @@ export default function App() {
                 setIsDiscoveryModalOpen(true);
               }}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors shadow-sm"
-              title="Intelligent Discovery & Search across Christian library & YouTube (Shortcut: /)"
+              title="Intelligent Discovery & Search across KINGDOM+ Christian Library & Global Network (Shortcut: /)"
             >
               <Search className="w-3.5 h-3.5 text-amber-400" />
               <span className="hidden sm:inline">Intelligent Discovery</span>
@@ -842,7 +842,7 @@ export default function App() {
       {/* ====================================================================
           MAIN VIEWPORT ROUTER
       ==================================================================== */}
-      <main className="flex-1 pb-20 md:pb-0">
+      <main className="flex-1 pb-24 md:pb-0">
         {/* 1. STREAMING HOMEPAGE */}
         {activeView === 'streaming' && (
           <div className="flex flex-col gap-6 sm:gap-10 pb-12 sm:pb-16">
@@ -1030,14 +1030,14 @@ export default function App() {
                     Browse Videos by Category
                   </h2>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
                     <button
                       type="button"
                       onClick={() => {
                         setSelectedChannelId(null);
                         setActiveView('ministers');
                       }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors whitespace-nowrap shrink-0"
                     >
                       <Users className="w-3.5 h-3.5 text-amber-400" />
                       <span>Explore Ministers ({ministerProfiles.length})</span>
@@ -1046,7 +1046,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setActiveView('movies')}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-amber-400 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-amber-400 transition-colors whitespace-nowrap shrink-0"
                     >
                       <Film className="w-3.5 h-3.5" />
                       <span>Christian Movies →</span>
@@ -1054,7 +1054,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
+                <div className="flex sm:grid sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-8 overflow-x-auto no-scrollbar gap-2.5 pb-1 sm:pb-0 snap-x snap-mandatory">
                   {eightMainCategories.map((cat, index) => {
                     const count =
                       cat.slug === 'live-special-broadcasts'
@@ -1069,7 +1069,7 @@ export default function App() {
                         key={cat.id}
                         type="button"
                         onClick={() => openCategoryExplorer(cat.slug)}
-                        className="group p-3 rounded-xl bg-zinc-900/80 hover:bg-amber-500/15 border border-zinc-800/90 hover:border-amber-500/50 text-left transition-all flex flex-col justify-between gap-2"
+                        className="min-w-[175px] sm:min-w-0 shrink-0 snap-start group p-3.5 sm:p-3 rounded-xl bg-zinc-900/80 hover:bg-amber-500/15 border border-zinc-800/90 hover:border-amber-500/50 text-left transition-all flex flex-col justify-between gap-2"
                       >
                         <div className="flex items-center justify-between text-[10px] font-mono tabular-nums text-zinc-500 group-hover:text-amber-400">
                           <span>0{index + 1}</span>
@@ -1626,7 +1626,7 @@ export default function App() {
         aria-label="Mobile Bottom Navigation"
         className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-[#09090B]/95 backdrop-blur-md border-t border-zinc-800/90 pb-safe"
       >
-        <div className="grid grid-cols-5 items-center h-14 px-1">
+        <div className="grid grid-cols-5 items-center h-16 px-1">
           {[
             { id: 'streaming', label: 'Home', icon: Play },
             { id: 'categories', label: 'Categories', icon: LayoutGrid },
@@ -1647,12 +1647,12 @@ export default function App() {
                   setActiveView(tab.id as NavView);
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
-                className={`flex flex-col items-center justify-center min-h-[44px] py-1 transition-colors ${
-                  isActive ? 'text-amber-400' : 'text-zinc-400 hover:text-zinc-200'
+                className={`flex flex-col items-center justify-center min-h-[48px] py-1.5 transition-colors ${
+                  isActive ? 'text-amber-400 font-semibold' : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                <Icon className="w-4 h-4" />
-                <span className="text-[10px] font-medium tracking-tight mt-1 whitespace-nowrap">
+                <Icon className="w-5 h-5" />
+                <span className="text-[11px] font-medium tracking-tight mt-1 whitespace-nowrap">
                   {tab.label}
                 </span>
               </button>

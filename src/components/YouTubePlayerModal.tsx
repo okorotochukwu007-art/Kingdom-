@@ -21,6 +21,7 @@ import {
   RotateCw,
   Send,
   SkipForward,
+  Subtitles,
   Volume2,
   VolumeX,
   X,
@@ -117,7 +118,16 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   const [autoPlayNext, setAutoPlayNext] = useState<boolean>(true);
   const [isCompactMini, setIsCompactMini] = useState<boolean>(false);
   const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
+  const [isRotatedLandscape, setIsRotatedLandscape] = useState<boolean>(false);
+  const [controlsVisible, setControlsVisible] = useState<boolean>(true);
+  const controlsHideTimerRef = useRef<number | null>(null);
+  const [isStreamWarmingUp, setIsStreamWarmingUp] = useState<boolean>(false);
+  const [introBannerShieldActive, setIntroBannerShieldActive] = useState<boolean>(true);
+  const introShieldTimerRef = useRef<number | null>(null);
+  const warmupTimerRef = useRef<number | null>(null);
   const [streamRetryCount, setStreamRetryCount] = useState<number>(0);
+  const [captionsEnabled, setCaptionsEnabled] = useState<boolean>(false);
+  const [mobilePlayerTab, setMobilePlayerTab] = useState<'focus' | 'upnext' | 'comments' | 'overview'>('focus');
 
   const [comments, setComments] = useState<VideoComment[]>([]);
   const [newComment, setNewComment] = useState('');
@@ -158,11 +168,66 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
 
   useEffect(() => {
     const handleFsChange = () => {
-      setIsNativeFullscreen(Boolean(document.fullscreenElement));
+      const fsActive = Boolean(document.fullscreenElement);
+      setIsNativeFullscreen(fsActive);
+      if (!fsActive) {
+        setIsRotatedLandscape(false);
+      }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
-    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange as EventListener);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange as EventListener);
+    };
   }, []);
+
+  const revealControlsTemporarily = React.useCallback(() => {
+    setControlsVisible(true);
+    if (controlsHideTimerRef.current) {
+      window.clearTimeout(controlsHideTimerRef.current);
+    }
+    controlsHideTimerRef.current = window.setTimeout(() => {
+      setControlsVisible(false);
+    }, 3200);
+  }, []);
+
+  const triggerIntroBannerShield = React.useCallback((withWarmupCurtain = false) => {
+    setIntroBannerShieldActive(true);
+    if (introShieldTimerRef.current) {
+      window.clearTimeout(introShieldTimerRef.current);
+    }
+    introShieldTimerRef.current = window.setTimeout(() => {
+      setIntroBannerShieldActive(false);
+    }, 4500);
+
+    if (withWarmupCurtain) {
+      setIsStreamWarmingUp(true);
+      if (warmupTimerRef.current) {
+        window.clearTimeout(warmupTimerRef.current);
+      }
+      warmupTimerRef.current = window.setTimeout(() => {
+        setIsStreamWarmingUp(false);
+      }, 1500);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isPlaying) {
+      revealControlsTemporarily();
+      triggerIntroBannerShield(false);
+    } else {
+      setControlsVisible(true);
+      if (controlsHideTimerRef.current) {
+        window.clearTimeout(controlsHideTimerRef.current);
+      }
+    }
+    return () => {
+      if (controlsHideTimerRef.current) {
+        window.clearTimeout(controlsHideTimerRef.current);
+      }
+    };
+  }, [isPlaying, revealControlsTemporarily, triggerIntroBannerShield]);
 
   // Load comments for this video (Server API first, Cloudflare localStorage + Supabase fallback)
   useEffect(() => {
@@ -171,6 +236,8 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     setHasStartedPlayback(false);
     setCurrentTime(initialProgressSeconds || 0);
     setDuration(video.duration_seconds || 0);
+    setMobilePlayerTab('focus');
+    triggerIntroBannerShield(true);
 
     const loadComments = async () => {
       const localComments = loadLocalVideoComments(video.id);
@@ -219,6 +286,11 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     };
 
     loadComments();
+
+    return () => {
+      if (introShieldTimerRef.current) window.clearTimeout(introShieldTimerRef.current);
+      if (warmupTimerRef.current) window.clearTimeout(warmupTimerRef.current);
+    };
   }, [video.id]);
 
   // Listen for iframe postMessage telemetry as backup for YT API state/time updates
@@ -270,6 +342,9 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       rel: '0',
       modestbranding: '1',
       iv_load_policy: '3',
+      cc_load_policy: captionsEnabled ? '1' : '0',
+      cc_lang_pref: 'en',
+      hl: 'en',
       playsinline: '1',
       start: String(startSec),
       origin: window.location.origin,
@@ -421,7 +496,9 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
         player?.pauseVideo?.();
         sendIframeCommand('pauseVideo');
         setIsPlaying(false);
+        setIsStreamWarmingUp(false);
       } else {
+        triggerIntroBannerShield(!hasStartedPlayback);
         player?.playVideo?.();
         sendIframeCommand('playVideo');
         setIsPlaying(true);
@@ -431,7 +508,9 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       if (isPlaying) {
         sendIframeCommand('pauseVideo');
         setIsPlaying(false);
+        setIsStreamWarmingUp(false);
       } else {
+        triggerIntroBannerShield(!hasStartedPlayback);
         sendIframeCommand('playVideo');
         setIsPlaying(true);
         setHasStartedPlayback(true);
@@ -440,22 +519,49 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   };
 
   const toggleNativeFullscreen = async () => {
-    const el = fullscreenWrapperRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> }) | null;
-    if (!el) return;
-    try {
-      if (!document.fullscreenElement) {
+    const el = fullscreenWrapperRef.current as (HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void>;
+    }) | null;
+
+    if (isNativeFullscreen || document.fullscreenElement) {
+      setIsNativeFullscreen(false);
+      setIsRotatedLandscape(false);
+      try {
+        if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+          await document.exitFullscreen();
+        }
+      } catch {}
+      try {
+        const scr = window.screen as any;
+        if (scr?.orientation && typeof scr.orientation.unlock === 'function') {
+          scr.orientation.unlock();
+        }
+      } catch {}
+      return;
+    }
+
+    setIsNativeFullscreen(true);
+    revealControlsTemporarily();
+
+    if (el) {
+      try {
         if (typeof el.requestFullscreen === 'function') {
           await el.requestFullscreen();
         } else if (typeof el.webkitRequestFullscreen === 'function') {
           await el.webkitRequestFullscreen();
-        } else {
-          setIsNativeFullscreen((prev) => !prev);
         }
-      } else {
-        await document.exitFullscreen();
+      } catch {
+        // Fallback to fixed viewport fullscreen (e.g. iOS Safari)
+      }
+    }
+
+    try {
+      const scr = window.screen as any;
+      if (scr?.orientation && typeof scr.orientation.lock === 'function') {
+        await scr.orientation.lock('landscape');
       }
     } catch {
-      setIsNativeFullscreen((prev) => !prev);
+      // Orientation lock is optional and unsupported on iOS Safari
     }
   };
 
@@ -505,6 +611,25 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       player?.setPlaybackRate?.(nextSpeed);
     } catch {}
     sendIframeCommand('setPlaybackRate', [nextSpeed]);
+  };
+
+  const toggleCaptions = () => {
+    const next = !captionsEnabled;
+    setCaptionsEnabled(next);
+    const player = playerInstanceRef.current;
+    try {
+      if (next) {
+        player?.loadModule?.('captions');
+        player?.setOption?.('captions', 'track', { languageCode: 'en' });
+        sendIframeCommand('loadModule', ['captions']);
+        sendIframeCommand('setOption', ['captions', 'track', { languageCode: 'en' }]);
+      } else {
+        player?.unloadModule?.('captions');
+        player?.setOption?.('captions', 'track', {});
+        sendIframeCommand('unloadModule', ['captions']);
+        sendIframeCommand('setOption', ['captions', 'track', {}]);
+      }
+    } catch {}
   };
 
   const playNextRelated = () => {
@@ -692,47 +817,47 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
       className={
         isMinimized
           ? 'fixed z-50 bottom-[62px] md:bottom-5 right-2 left-2 sm:left-auto sm:right-5 sm:w-[370px] lg:w-[410px] bg-[#121215]/95 backdrop-blur-xl border border-zinc-700/90 rounded-2xl shadow-2xl overflow-hidden transition-all duration-300'
-          : 'fixed inset-0 z-50 bg-black/95 backdrop-blur-md overflow-y-auto'
+          : 'fixed inset-0 z-50 bg-[#09090B] overflow-y-auto'
       }
     >
       <div
         className={
           isMinimized
             ? 'flex flex-col'
-            : 'min-h-screen max-w-[1440px] mx-auto px-4 sm:px-8 py-4 sm:py-6 flex flex-col gap-5'
+            : 'min-h-screen max-w-[1440px] mx-auto px-0 sm:px-6 lg:px-8 pb-24 sm:py-5 flex flex-col gap-0 sm:gap-5'
         }
       >
         {/* ====================================================================
-            THEATER HEADER BAR (Hidden when in Floating Mini-Player Mode)
+            THEATER HEADER BAR (Compact on Mobile, Full on Desktop)
         ==================================================================== */}
         <div
           className={
             isMinimized
               ? 'hidden'
-              : 'flex items-center justify-between gap-3 border-b border-zinc-800 pb-3.5'
+              : 'flex items-center justify-between gap-2 px-3.5 py-2.5 sm:px-0 sm:pb-3.5 border-b border-zinc-800/90 bg-[#09090B]/95 backdrop-blur-md'
           }
         >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="font-display text-base sm:text-lg font-semibold text-amber-400 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-display text-sm sm:text-lg font-semibold text-amber-400 shrink-0">
               KINGDOM+
             </span>
             <span className="text-zinc-600" aria-hidden="true">
               /
             </span>
-            <span className="text-xs text-zinc-400 truncate hidden sm:inline">
+            <span className="text-xs text-zinc-400 truncate hidden md:inline">
               {video.primary_category_name}
             </span>
-            <span className="text-zinc-600 hidden sm:inline" aria-hidden="true">
+            <span className="text-zinc-600 hidden md:inline" aria-hidden="true">
               /
             </span>
             <span className="text-xs text-zinc-200 font-medium truncate">{video.title}</span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={() => onToggleMinimize(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-xs font-medium border border-amber-500/30 transition-colors whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-xs font-medium border border-amber-500/30 transition-colors whitespace-nowrap min-h-[38px]"
               title="Minimize to Floating Mini-Player to keep listening while browsing"
             >
               <PictureInPicture2 className="w-4 h-4" />
@@ -742,7 +867,8 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-medium border border-zinc-800 transition-colors whitespace-nowrap"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-medium border border-zinc-800 transition-colors whitespace-nowrap min-h-[38px]"
+              aria-label="Close Player"
             >
               <X className="w-4 h-4" />
               <span className="hidden sm:inline">Close</span>
@@ -751,24 +877,24 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
         </div>
 
         {!isMinimized && reportFeedback && (
-          <div className="px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+          <div className="mx-3.5 sm:mx-0 mt-2 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
             {reportFeedback}
           </div>
         )}
 
         {/* ====================================================================
             PERSISTENT NATIVE KINGDOM+ VIDEO CONTAINER
-            NOTE: The underlying iframe is scaled & pointer-events-shielded so zero
-            external logos, titles, watermarks, or links can ever be seen or clicked!
+            100% True 16:9 Alignment: Zero zoom-crop so video captions & subtitles
+            never get cut off or misaligned on mobile or desktop!
         ==================================================================== */}
         <div
           className={
             isMinimized
               ? 'flex flex-col'
-              : 'grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start'
+              : 'grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 lg:gap-8 items-start'
           }
         >
-          <div className={isMinimized ? 'flex flex-col' : 'lg:col-span-8 flex flex-col gap-5'}>
+          <div className={isMinimized ? 'flex flex-col' : 'lg:col-span-8 flex flex-col gap-2.5 sm:gap-5'}>
             <div
               ref={fullscreenWrapperRef}
               className={
@@ -776,17 +902,31 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                   ? isCompactMini
                     ? 'flex items-center gap-3 p-2.5'
                     : 'flex flex-col'
-                  : `flex flex-col gap-3 ${isNativeFullscreen ? 'bg-black justify-center p-4' : ''}`
+                  : isNativeFullscreen
+                    ? 'fixed inset-0 z-[100] w-screen h-[100dvh] bg-black flex flex-col items-center justify-center overflow-hidden select-none'
+                    : 'sticky top-0 z-30 sm:static bg-[#09090B] flex flex-col gap-0 sm:gap-2.5'
               }
             >
-              {/* THE SHIELDED & CROPPED STREAM CONTAINER */}
+              {/* THE TRUE 16:9 SHIELDED STREAM CONTAINER (CAPTIONS PERFECTLY ALIGNED) */}
               <div
+                style={
+                  isNativeFullscreen && isRotatedLandscape && !isMinimized
+                    ? {
+                        width: '100dvh',
+                        height: '100vw',
+                        transform: 'rotate(90deg)',
+                        transformOrigin: 'center center',
+                      }
+                    : undefined
+                }
                 className={
                   isMinimized
                     ? isCompactMini
                       ? 'relative w-24 sm:w-28 aspect-video rounded-lg overflow-hidden bg-black border border-zinc-800 shrink-0 select-none'
                       : 'relative aspect-video w-full bg-black border-b border-zinc-800 overflow-hidden select-none'
-                    : 'relative aspect-video w-full rounded-xl overflow-hidden bg-black border border-zinc-800 shadow-2xl select-none'
+                    : isNativeFullscreen
+                      ? 'relative w-full h-full flex items-center justify-center bg-black overflow-hidden select-none'
+                      : 'relative aspect-video w-full sm:rounded-xl overflow-hidden bg-black border-b sm:border border-zinc-800 shadow-2xl select-none'
                 }
               >
                 {playerError ? (
@@ -821,56 +961,379 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     </div>
                   </div>
                 ) : (
-                  /* Scaled wrapper crops out any top/bottom embed chrome & disables iframe clicks */
-                  <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-none scale-[1.16] origin-center">
-                    <div ref={playerContainerRef} className="w-full h-full pointer-events-none" />
-                  </div>
-                )}
-
-                {/* NATIVE KINGDOM+ CLICK/TOUCH SHIELD (Intercepts all clicks so user stays inside KINGDOM+) */}
-                {!playerError && (
+                  /* 1:1 True 16:9 Frame so Subtitles & Lower-Third Captions Stay 100% Aligned Inside the Video */
                   <div
-                    onClick={togglePlayPause}
-                    onDoubleClick={toggleNativeFullscreen}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="absolute inset-0 z-10 cursor-pointer flex items-center justify-center"
-                    title={isPlaying ? 'Tap to Pause' : 'Tap to Play'}
+                    className={
+                      isNativeFullscreen && !isMinimized
+                        ? 'relative w-full h-full max-w-full max-h-full aspect-video mx-auto my-auto overflow-hidden pointer-events-none'
+                        : 'absolute inset-0 w-full h-full overflow-hidden pointer-events-none'
+                    }
                   >
-                    {/* Subtle KINGDOM+ Watermark Badge in Top-Left */}
-                    {!isCompactMini && (
-                      <div className="absolute top-3 left-3 px-2.5 py-1 rounded-md bg-black/65 backdrop-blur-md border border-zinc-800/80 flex items-center gap-1.5 pointer-events-none z-20">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                        <span className="font-display text-[10px] font-bold tracking-wider text-amber-400">
-                          KINGDOM+ STREAM
-                        </span>
-                      </div>
-                    )}
+                    <div ref={playerContainerRef} className="w-full h-full pointer-events-none" />
 
-                    {/* Native KINGDOM+ Pause / Ready Screen Overlay */}
-                    {!isPlaying && (
-                      <div className="absolute inset-0 bg-black/70 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 p-4 text-center transition-opacity">
-                        {!hasStartedPlayback && currentTime < 1 && (video.thumbnail_maxres_url || video.thumbnail_high_url) && (
+                    {/* KINGDOM+ Startup / Buffering Curtain: Hides external player intro banner & loading spinner */}
+                    {isPlaying && isStreamWarmingUp && (
+                      <div className="absolute inset-0 bg-[#070709] flex flex-col items-center justify-center gap-3 pointer-events-none z-10 transition-opacity duration-500">
+                        {(video.thumbnail_maxres_url || video.thumbnail_high_url) && (
                           <img
                             src={video.thumbnail_maxres_url || video.thumbnail_high_url}
                             alt=""
                             referrerPolicy="no-referrer"
-                            className="absolute inset-0 w-full h-full object-cover opacity-40 -z-10"
+                            className="absolute inset-0 w-full h-full object-cover opacity-30 blur-[1px]"
                           />
                         )}
-                        <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-amber-500 text-zinc-950 flex items-center justify-center shadow-2xl">
-                          <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-current ml-0.5" />
+                        <div className="relative z-10 flex flex-col items-center gap-2">
+                          <div className="w-10 h-10 rounded-full border-2 border-amber-500/30 border-t-amber-400 animate-spin" />
+                          <span className="px-2.5 py-0.5 rounded-full bg-black/80 border border-amber-500/30 text-[10px] font-display font-bold tracking-widest text-amber-400 uppercase">
+                            KINGDOM+ STREAM
+                          </span>
                         </div>
-                        {!isCompactMini && (
-                          <div className="max-w-md mt-1">
-                            <div className="text-xs sm:text-sm font-semibold text-zinc-100 line-clamp-1">
+                      </div>
+                    )}
+
+                    {/* Dynamic Top Edge Shield: Completely masks external title/share intro banner while starting or resuming */}
+                    <div
+                      className={`absolute top-0 inset-x-0 pointer-events-none transition-all duration-500 ${
+                        introBannerShieldActive
+                          ? 'h-[68px] sm:h-[78px] bg-gradient-to-b from-black via-[#060608] via-75% to-transparent'
+                          : 'h-12 sm:h-14 bg-gradient-to-b from-black via-black/90 via-50% to-transparent'
+                      }`}
+                    />
+
+                    {/* Bottom-Right Corner KINGDOM+ Network Bug Shield: Masks external corner watermark without touching center captions */}
+                    {!isCompactMini && (
+                      <div className="absolute bottom-0 right-0 w-32 sm:w-36 h-10 sm:h-11 bg-gradient-to-tl from-[#050507] via-[#050507] via-72% to-transparent flex items-end justify-end px-2.5 py-1.5 pointer-events-none">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-black/85 border border-zinc-800/80 text-[9px] font-display font-bold tracking-widest text-zinc-300">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                          KINGDOM+
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* NATIVE KINGDOM+ TOUCH & FULLSCREEN HUD SHIELD */}
+                {!playerError && (
+                  <div
+                    onClick={() => {
+                      if (isMinimized) {
+                        togglePlayPause();
+                        return;
+                      }
+                      if (!isPlaying) {
+                        togglePlayPause();
+                        return;
+                      }
+                      if (!controlsVisible) {
+                        revealControlsTemporarily();
+                      } else {
+                        setControlsVisible(false);
+                      }
+                    }}
+                    onDoubleClick={toggleNativeFullscreen}
+                    onContextMenu={(e) => e.preventDefault()}
+                    className="absolute inset-0 z-10 cursor-pointer flex flex-col justify-between"
+                  >
+                    {/* Top HUD Strip (Auto-hides while playing for 100% distraction-free video) */}
+                    {!isCompactMini && (
+                      <div
+                        className={`flex items-center justify-between gap-2 p-2.5 sm:p-3.5 bg-gradient-to-b from-black/80 via-black/35 to-transparent transition-opacity duration-300 ${
+                          !isPlaying || controlsVisible
+                            ? 'opacity-100'
+                            : 'opacity-0 pointer-events-none'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="px-2 py-0.5 rounded bg-black/75 border border-zinc-700/80 font-display text-[10px] font-bold tracking-wider text-amber-400 shrink-0">
+                            KINGDOM+
+                          </span>
+                          {isNativeFullscreen && (
+                            <span className="text-xs font-medium text-zinc-100 truncate drop-shadow">
                               {video.title}
-                            </div>
-                            <div className="text-[11px] text-amber-400 mt-0.5">
-                              {video.artist_name || video.channel_title} ·{' '}
-                              {hasStartedPlayback || currentTime > 1 ? 'Tap to Resume' : 'Tap to Play'}
-                            </div>
+                            </span>
+                          )}
+                        </div>
+
+                        {!isMinimized && (
+                          <div
+                            className="flex items-center gap-1.5 shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={toggleCaptions}
+                              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold backdrop-blur-md border transition-colors flex items-center gap-1 min-h-[34px] ${
+                                captionsEnabled
+                                  ? 'bg-amber-500 text-zinc-950 border-amber-400'
+                                  : 'bg-black/70 text-zinc-200 border-zinc-700/80 hover:bg-black/90'
+                              }`}
+                              title="Toggle Captions (CC)"
+                            >
+                              <Subtitles className="w-3.5 h-3.5" />
+                              <span>CC</span>
+                            </button>
+
+                            {isNativeFullscreen && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsRotatedLandscape((prev) => !prev);
+                                  revealControlsTemporarily();
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold backdrop-blur-md border transition-colors flex items-center gap-1 min-h-[34px] sm:hidden ${
+                                  isRotatedLandscape
+                                    ? 'bg-amber-500 text-zinc-950 border-amber-400'
+                                    : 'bg-black/70 text-zinc-100 border-zinc-700/80'
+                                }`}
+                                title="Rotate Video to Landscape Fullscreen"
+                              >
+                                <RotateCw className="w-3.5 h-3.5" />
+                                <span>{isRotatedLandscape ? 'Portrait' : 'Rotate'}</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={toggleNativeFullscreen}
+                              className="px-2.5 py-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-amber-400 border border-zinc-700/80 backdrop-blur-md text-[11px] font-semibold flex items-center gap-1 min-h-[34px]"
+                              title={isNativeFullscreen ? 'Exit Full Screen' : 'Watch Full Screen'}
+                            >
+                              {isNativeFullscreen ? (
+                                <>
+                                  <Minimize className="w-3.5 h-3.5" />
+                                  <span>Exit</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Maximize className="w-3.5 h-3.5" />
+                                  <span>Full Screen</span>
+                                </>
+                              )}
+                            </button>
                           </div>
                         )}
+                      </div>
+                    )}
+
+                    {/* Center Transport Touch Overlay (Play/Pause & Quick -10s / +10s Skip) */}
+                    <div className="flex-1 flex items-center justify-center">
+                      {!isPlaying ? (
+                        <div className="absolute inset-0 bg-[#09090B]/92 backdrop-blur-md flex flex-col items-center justify-center gap-2.5 p-4 text-center transition-opacity">
+                          {!hasStartedPlayback &&
+                            currentTime < 1 &&
+                            (video.thumbnail_maxres_url || video.thumbnail_high_url) && (
+                              <img
+                                src={video.thumbnail_maxres_url || video.thumbnail_high_url}
+                                alt=""
+                                referrerPolicy="no-referrer"
+                                className="absolute inset-0 w-full h-full object-cover opacity-40 -z-10"
+                              />
+                            )}
+                          <div className="flex items-center gap-5" onClick={(e) => e.stopPropagation()}>
+                            {!isMinimized && !video.is_live_now && hasStartedPlayback && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  skipBySeconds(-10);
+                                  revealControlsTemporarily();
+                                }}
+                                className="w-11 h-11 rounded-full bg-black/75 border border-zinc-700 text-zinc-100 flex items-center justify-center active:scale-95 transition-transform"
+                                title="Rewind 10s"
+                              >
+                                <RotateCcw className="w-5 h-5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={togglePlayPause}
+                              className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-amber-500 text-zinc-950 flex items-center justify-center shadow-2xl active:scale-95 transition-transform"
+                              aria-label="Play Video"
+                            >
+                              <Play className="w-7 h-7 fill-current ml-0.5" />
+                            </button>
+                            {!isMinimized && !video.is_live_now && hasStartedPlayback && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  skipBySeconds(10);
+                                  revealControlsTemporarily();
+                                }}
+                                className="w-11 h-11 rounded-full bg-black/75 border border-zinc-700 text-zinc-100 flex items-center justify-center active:scale-95 transition-transform"
+                                title="Forward 10s"
+                              >
+                                <RotateCw className="w-5 h-5" />
+                              </button>
+                            )}
+                          </div>
+                          {!isCompactMini && (
+                            <div className="max-w-md mt-1 px-3">
+                              <div className="text-xs sm:text-sm font-semibold text-zinc-100 line-clamp-1">
+                                {video.title}
+                              </div>
+                              <div className="text-[11px] text-amber-400 mt-0.5">
+                                {video.artist_name || video.channel_title} ·{' '}
+                                {hasStartedPlayback || currentTime > 1 ? 'Tap to Resume' : 'Tap to Play'}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        !isMinimized &&
+                        controlsVisible && (
+                          <div
+                            className="flex items-center gap-6 animate-fade-in"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {!video.is_live_now && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  skipBySeconds(-10);
+                                  revealControlsTemporarily();
+                                }}
+                                className="w-11 h-11 rounded-full bg-black/70 backdrop-blur-md border border-zinc-700/80 text-zinc-100 flex flex-col items-center justify-center active:scale-95 transition-transform"
+                                title="Rewind 10s"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                                <span className="text-[9px] font-mono">-10s</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={togglePlayPause}
+                              className="w-14 h-14 rounded-full bg-black/75 backdrop-blur-md border border-amber-500/60 text-amber-400 flex items-center justify-center shadow-xl active:scale-95 transition-transform"
+                              aria-label="Pause Video"
+                            >
+                              <Pause className="w-6 h-6 fill-current" />
+                            </button>
+
+                            {!video.is_live_now && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  skipBySeconds(10);
+                                  revealControlsTemporarily();
+                                }}
+                                className="w-11 h-11 rounded-full bg-black/70 backdrop-blur-md border border-zinc-700/80 text-zinc-100 flex flex-col items-center justify-center active:scale-95 transition-transform"
+                                title="Forward 10s"
+                              >
+                                <RotateCw className="w-4 h-4" />
+                                <span className="text-[9px] font-mono">+10s</span>
+                              </button>
+                            )}
+                          </div>
+                        )
+                      )}
+                    </div>
+
+                    {/* Bottom Fullscreen HUD Scrubber Bar (Shown inside Fullscreen when tapped) */}
+                    {isNativeFullscreen && !isMinimized && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className={`p-3 sm:p-5 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-2 transition-opacity duration-300 ${
+                          !isPlaying || controlsVisible
+                            ? 'opacity-100'
+                            : 'opacity-0 pointer-events-none'
+                        }`}
+                      >
+                        {!video.is_live_now && (
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-mono tabular-nums text-zinc-200">
+                              {formatDurationSeconds(Math.floor(currentTime)) || '0:00'}
+                            </span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={Math.max(1, duration)}
+                              value={Math.min(currentTime, Math.max(1, duration))}
+                              onChange={(e) => {
+                                handleSeekBarChange(e);
+                                revealControlsTemporarily();
+                              }}
+                              className="flex-1 h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                            />
+                            <span className="text-xs font-mono tabular-nums text-zinc-300">
+                              {formatDurationSeconds(Math.floor(duration)) || '0:00'}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                togglePlayPause();
+                                revealControlsTemporarily();
+                              }}
+                              className="px-3.5 py-1.5 rounded-lg bg-amber-500 text-zinc-950 text-xs font-semibold flex items-center gap-1.5"
+                            >
+                              {isPlaying ? (
+                                <>
+                                  <Pause className="w-3.5 h-3.5 fill-current" />
+                                  <span>Pause</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                  <span>Play</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                toggleMute();
+                                revealControlsTemporarily();
+                              }}
+                              className="p-2 rounded-lg bg-zinc-900/90 text-zinc-200 border border-zinc-700"
+                            >
+                              {isMuted ? (
+                                <VolumeX className="w-4 h-4 text-amber-400" />
+                              ) : (
+                                <Volume2 className="w-4 h-4" />
+                              )}
+                            </button>
+
+                            {!video.is_live_now && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  cyclePlaybackSpeed();
+                                  revealControlsTemporarily();
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900/90 text-zinc-200 text-xs font-mono border border-zinc-700"
+                              >
+                                {playbackSpeed}x
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsRotatedLandscape((prev) => !prev);
+                                revealControlsTemporarily();
+                              }}
+                              className="sm:hidden px-3 py-1.5 rounded-lg bg-zinc-900/90 text-zinc-100 border border-zinc-700 text-xs font-medium flex items-center gap-1.5"
+                            >
+                              <RotateCw className="w-3.5 h-3.5 text-amber-400" />
+                              <span>{isRotatedLandscape ? 'Portrait' : 'Landscape'}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={toggleNativeFullscreen}
+                              className="px-3.5 py-1.5 rounded-lg bg-zinc-900/90 text-amber-400 border border-amber-500/40 text-xs font-semibold flex items-center gap-1.5"
+                            >
+                              <Minimize className="w-3.5 h-3.5" />
+                              <span>Exit Full Screen</span>
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1106,9 +1569,10 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
 
               {/* ==============================================================
                   THEATER NATIVE KINGDOM+ CONTROL BAR & MULTITASKING STRIP
+                  (Hidden when in Fullscreen so 100% of screen is pure video!)
               ============================================================== */}
-              {!isMinimized && (
-                <div className="p-3 sm:p-3.5 rounded-xl bg-[#121215] border border-zinc-800/90 flex flex-col gap-2.5">
+              {!isMinimized && !isNativeFullscreen && (
+                <div className="px-3 py-2 sm:p-3.5 sm:rounded-xl bg-[#121215] border-b sm:border border-zinc-800/90 flex flex-col gap-2">
                   {/* Interactive Scrubbing Bar (or Live Indicator for Real-Time Broadcasts) */}
                   {video.is_live_now ? (
                     <div className="flex items-center justify-between gap-3 px-1">
@@ -1121,11 +1585,11 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       </span>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs font-mono tabular-nums text-zinc-300 w-12 text-right">
+                    <div className="flex items-center gap-2.5 sm:gap-3">
+                      <span className="text-[11px] sm:text-xs font-mono tabular-nums text-zinc-300 w-10 sm:w-12 text-right">
                         {formatDurationSeconds(Math.floor(currentTime)) || '0:00'}
                       </span>
-                      <div className="relative flex-1 flex items-center">
+                      <div className="relative flex-1 flex items-center py-1">
                         <input
                           type="range"
                           min={0}
@@ -1135,19 +1599,19 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                           className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                         />
                       </div>
-                      <span className="text-xs font-mono tabular-nums text-zinc-400 w-12">
+                      <span className="text-[11px] sm:text-xs font-mono tabular-nums text-zinc-400 w-10 sm:w-12">
                         {formatDurationSeconds(Math.floor(duration)) || '0:00'}
                       </span>
                     </div>
                   )}
 
-                  {/* Transport & Multitasking Controls */}
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                  {/* Transport & Multitasking Controls (Horizontally scrollable on mobile so nothing wraps or crowds) */}
+                  <div className="flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
                         onClick={togglePlayPause}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-semibold transition-colors"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
                       >
                         {isPlaying ? (
                           <>
@@ -1167,7 +1631,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                           <button
                             type="button"
                             onClick={() => skipBySeconds(-10)}
-                            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors"
+                            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
                             title="Rewind 10 seconds"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
@@ -1177,7 +1641,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                           <button
                             type="button"
                             onClick={() => skipBySeconds(10)}
-                            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors"
+                            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
                             title="Forward 10 seconds"
                           >
                             <RotateCw className="w-3.5 h-3.5" />
@@ -1189,7 +1653,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       <button
                         type="button"
                         onClick={toggleMute}
-                        className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 transition-colors"
+                        className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 transition-colors shrink-0 min-h-[38px] min-w-[38px] flex items-center justify-center"
                         title={isMuted ? 'Unmute' : 'Mute'}
                       >
                         {isMuted ? (
@@ -1199,12 +1663,26 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                         )}
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={toggleCaptions}
+                        className={`inline-flex items-center gap-1 px-2.5 py-2 rounded-lg text-xs border transition-colors whitespace-nowrap shrink-0 min-h-[38px] ${
+                          captionsEnabled
+                            ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-semibold'
+                            : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-zinc-100'
+                        }`}
+                        title={captionsEnabled ? 'Disable Subtitles / Captions' : 'Enable Subtitles / Captions'}
+                      >
+                        <Subtitles className="w-3.5 h-3.5" />
+                        <span>CC</span>
+                      </button>
+
                       {!video.is_live_now && (
                         <>
                           <button
                             type="button"
                             onClick={cyclePlaybackSpeed}
-                            className="px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-mono border border-zinc-800 transition-colors"
+                            className="px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-mono border border-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
                             title="Change Playback Speed"
                           >
                             {playbackSpeed}x
@@ -1213,7 +1691,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                           <button
                             type="button"
                             onClick={() => setIsLooping((prev) => !prev)}
-                            className={`inline-flex items-center gap-1 px-2.5 py-2 rounded-lg text-xs border transition-colors ${
+                            className={`inline-flex items-center gap-1 px-2.5 py-2 rounded-lg text-xs border transition-colors whitespace-nowrap shrink-0 min-h-[38px] ${
                               isLooping
                                 ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-medium'
                                 : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
@@ -1229,7 +1707,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       <button
                         type="button"
                         onClick={toggleNativeFullscreen}
-                        className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors"
+                        className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
                         title="Toggle Fullscreen"
                       >
                         {isNativeFullscreen ? (
@@ -1244,13 +1722,13 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     </div>
 
                     {/* Keep Listening While Browsing / Chatting Shortcuts */}
-                    <div className="flex items-center flex-wrap gap-1.5">
+                    <div className="hidden sm:flex items-center gap-1.5 shrink-0">
                       {onNavigateWhileListening && (
                         <>
                           <button
                             type="button"
                             onClick={() => onNavigateWhileListening('categories')}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors"
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0"
                           >
                             <Minimize2 className="w-3.5 h-3.5 text-amber-400" />
                             <span>Browse Categories</span>
@@ -1259,7 +1737,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                           <button
                             type="button"
                             onClick={() => onNavigateWhileListening('community')}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors"
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0"
                           >
                             <MessageSquare className="w-3.5 h-3.5 text-amber-400" />
                             <span>Chat in Community</span>
@@ -1273,38 +1751,50 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
             </div>
 
             {/* ================================================================
-                THEATER VIDEO METADATA & RELATED VIDEOS (Hidden when Minimized)
+                VIDEO-FIRST FOCUS INTERFACE ON MOBILE
+                Limits distractions while watching so the video is the hero!
             ================================================================ */}
             {!isMinimized && (
-              <>
-                <div className="flex flex-col gap-4 pb-5 border-b border-zinc-800">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-amber-400">
-                    <span>{video.primary_category_name}</span>
-                    {video.subcategory_label && (
-                      <>
-                        <span aria-hidden="true" className="text-zinc-600">
-                          ·
-                        </span>
-                        <span className="text-zinc-300">{video.subcategory_label}</span>
-                      </>
-                    )}
+              <div className="px-3.5 sm:px-0 pt-2 sm:pt-0 flex flex-col gap-4">
+                {/* Essential Now-Playing Bar (Always visible below player) */}
+                <div className="flex flex-col gap-3 pb-3.5 border-b border-zinc-800/90">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-[11px] font-medium text-amber-400">
+                        <span>{video.primary_category_name}</span>
+                        {video.subcategory_label && (
+                          <>
+                            <span aria-hidden="true" className="text-zinc-600">·</span>
+                            <span className="text-zinc-400 truncate">{video.subcategory_label}</span>
+                          </>
+                        )}
+                      </div>
+                      <h1 className="font-display text-base sm:text-2xl lg:text-3xl font-semibold text-zinc-50 leading-snug mt-0.5">
+                        {video.title}
+                      </h1>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={toggleNativeFullscreen}
+                      className="sm:hidden inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500 text-zinc-950 text-xs font-semibold shadow-md shrink-0"
+                    >
+                      <Maximize className="w-3.5 h-3.5" />
+                      <span>Full Screen</span>
+                    </button>
                   </div>
 
-                  <h1 className="font-display text-xl sm:text-3xl font-semibold text-zinc-50 leading-tight">
-                    {video.title}
-                  </h1>
-
-                  {/* Channel Attribution + Action Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+                  {/* Compact Minister Row + Quick Actions */}
+                  <div className="flex items-center justify-between gap-2">
                     <div
                       onClick={() => {
                         if (onOpenChannelWhileListening) {
                           onOpenChannelWhileListening(video.channel_id);
                         }
                       }}
-                      className="flex items-center gap-3 cursor-pointer group"
+                      className="flex items-center gap-2.5 cursor-pointer group min-w-0"
                     >
-                      <div className="w-10 h-10 rounded-full bg-zinc-800 text-amber-400 font-semibold flex items-center justify-center overflow-hidden shrink-0">
+                      <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-zinc-800 text-amber-400 font-semibold flex items-center justify-center overflow-hidden shrink-0 border border-zinc-700/70">
                         {video.channel_avatar_url ? (
                           <img
                             src={video.channel_avatar_url}
@@ -1316,62 +1806,168 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                           video.channel_title.charAt(0)
                         )}
                       </div>
-                      <div>
-                        <div className="text-sm font-semibold text-zinc-100 group-hover:text-amber-400 transition-colors">
+                      <div className="min-w-0">
+                        <div className="text-xs sm:text-sm font-semibold text-zinc-100 group-hover:text-amber-400 transition-colors truncate">
                           {video.artist_name || video.channel_title}
                         </div>
-                        <div className="text-xs text-zinc-400 flex items-center gap-1.5">
-                          <span className="text-amber-400/90">KINGDOM+ Verified</span>
-                          <span aria-hidden="true">·</span>
+                        <div className="text-[11px] text-zinc-400 flex items-center gap-1.5 font-mono tabular-nums">
                           <span>{formatCompactNumber(video.view_count)} views</span>
                           <span aria-hidden="true">·</span>
-                          <span>{formatRelativeDate(video.published_at)}</span>
+                          <span className="font-sans">{formatRelativeDate(video.published_at)}</span>
                         </div>
                       </div>
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex items-center flex-wrap gap-2">
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
                         onClick={(e) => onToggleSave(video.id, e)}
-                        className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap min-h-[36px] ${
                           isSaved
                             ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
                             : 'bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800'
                         }`}
                       >
-                        {isSaved ? <Check className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
+                        {isSaved ? <Check className="w-3.5 h-3.5" /> : <Bookmark className="w-3.5 h-3.5" />}
                         <span>{isSaved ? 'Saved' : 'Save'}</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => handleReportItem('video', video.id, video.title)}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-400 hover:text-zinc-200 transition-colors whitespace-nowrap shrink-0"
+                        className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors min-h-[36px]"
                         title="Report video to moderators"
                       >
                         <Flag className="w-3.5 h-3.5" />
-                        <span>Report</span>
                       </button>
                     </div>
                   </div>
-
-                  {video.description && (
-                    <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-line line-clamp-3">
-                      {video.description}
-                    </p>
-                  )}
                 </div>
 
-                {/* Up Next & Related Videos in Category / Ministry */}
+                {/* Mobile Mode Selector: Focus Mode (Default - Limits Distractions) | Up Next | Notes | About */}
+                <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-zinc-900/90 border border-zinc-800 lg:hidden">
+                  <button
+                    type="button"
+                    onClick={() => setMobilePlayerTab('focus')}
+                    className={`py-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                      mobilePlayerTab === 'focus'
+                        ? 'bg-amber-500 text-zinc-950'
+                        : 'text-zinc-300 hover:text-white'
+                    }`}
+                  >
+                    Focus Mode
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobilePlayerTab('upnext')}
+                    className={`py-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                      mobilePlayerTab === 'upnext'
+                        ? 'bg-amber-500 text-zinc-950'
+                        : 'text-zinc-300 hover:text-white'
+                    }`}
+                  >
+                    Up Next ({relatedVideos.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobilePlayerTab('comments')}
+                    className={`py-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                      mobilePlayerTab === 'comments'
+                        ? 'bg-amber-500 text-zinc-950'
+                        : 'text-zinc-300 hover:text-white'
+                    }`}
+                  >
+                    Notes ({comments.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobilePlayerTab('overview')}
+                    className={`py-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                      mobilePlayerTab === 'overview'
+                        ? 'bg-amber-500 text-zinc-950'
+                        : 'text-zinc-300 hover:text-white'
+                    }`}
+                  >
+                    About
+                  </button>
+                </div>
+
+                {/* FOCUS MODE (Default on Mobile: Zero Clutter, Next Broadcast Card + Fullscreen/Audio Controls) */}
+                {mobilePlayerTab === 'focus' && (
+                  <div className="lg:hidden flex flex-col gap-3 py-1">
+                    <div className="p-3.5 rounded-xl bg-[#121215] border border-zinc-800/90 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-zinc-100">
+                          Distraction-Free Viewing Active
+                        </div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5">
+                          Tap the video anytime for on-screen controls or Full Screen.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onToggleMinimize(true)}
+                        className="px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-amber-400 text-xs font-medium whitespace-nowrap shrink-0"
+                      >
+                        Audio / Mini
+                      </button>
+                    </div>
+
+                    {relatedVideos[0] && (
+                      <div
+                        onClick={() => onSelectVideo(relatedVideos[0])}
+                        className="p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800/80 flex items-center justify-between gap-3 cursor-pointer hover:border-amber-500/40 transition-colors"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <img
+                            src={relatedVideos[0].thumbnail_high_url}
+                            alt={relatedVideos[0].title}
+                            referrerPolicy="no-referrer"
+                            className="w-20 aspect-video rounded-lg object-cover bg-zinc-900 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400">
+                              Playing Next
+                            </span>
+                            <div className="text-xs font-medium text-zinc-100 truncate">
+                              {relatedVideos[0].title}
+                            </div>
+                            <div className="text-[11px] text-zinc-400 truncate">
+                              {relatedVideos[0].channel_title}
+                            </div>
+                          </div>
+                        </div>
+                        <SkipForward className="w-4 h-4 text-amber-400 shrink-0 mr-1" />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ABOUT / DESCRIPTION (Desktop always visible if present, Mobile only on 'overview' tab) */}
+                {video.description && (
+                  <div
+                    className={`${
+                      mobilePlayerTab === 'overview' ? 'block' : 'hidden lg:block'
+                    } p-3.5 rounded-xl bg-zinc-900/40 border border-zinc-800/70`}
+                  >
+                    <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-line line-clamp-4">
+                      {video.description}
+                    </p>
+                  </div>
+                )}
+
+                {/* Up Next & Related Videos in Category / Ministry (Desktop always, Mobile ONLY on 'upnext' tab) */}
                 {relatedVideos.length > 0 && (
-                  <div>
+                  <div
+                    className={`${
+                      mobilePlayerTab === 'upnext' ? 'block' : 'hidden lg:block'
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-3">
-                      <h2 className="text-sm sm:text-base font-semibold text-zinc-100">
-                        Up Next from {video.channel_title} &amp; {video.primary_category_name}
+                      <h2 className="text-sm sm:text-base font-semibold text-zinc-100 truncate">
+                        Up Next from {video.channel_title}
                       </h2>
-                      <label className="inline-flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                      <label className="inline-flex items-center gap-2 text-xs text-zinc-400 cursor-pointer shrink-0">
                         <input
                           type="checkbox"
                           checked={autoPlayNext}
@@ -1381,14 +1977,14 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                         <span>Auto-play next</span>
                       </label>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {relatedVideos.map((rel) => (
                         <div
                           key={rel.id}
                           onClick={() => onSelectVideo(rel)}
-                          className="group cursor-pointer rounded-lg border border-zinc-800/80 bg-zinc-900/40 overflow-hidden hover:border-amber-500/40 transition-colors"
+                          className="group cursor-pointer rounded-xl border border-zinc-800/80 bg-zinc-900/40 overflow-hidden hover:border-amber-500/40 transition-colors flex sm:flex-col gap-3 sm:gap-0 p-2 sm:p-0 items-center sm:items-stretch"
                         >
-                          <div className="aspect-video w-full bg-zinc-900 overflow-hidden">
+                          <div className="w-32 sm:w-full aspect-video rounded-lg sm:rounded-none bg-zinc-900 overflow-hidden shrink-0">
                             <img
                               src={rel.thumbnail_high_url}
                               alt={rel.title}
@@ -1396,7 +1992,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                             />
                           </div>
-                          <div className="p-2.5">
+                          <div className="p-0.5 sm:p-2.5 min-w-0 flex-1">
                             <div className="text-xs font-medium text-zinc-100 line-clamp-2 group-hover:text-amber-300">
                               {rel.title}
                             </div>
@@ -1409,13 +2005,17 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     </div>
                   </div>
                 )}
-              </>
+              </div>
             )}
           </div>
 
-          {/* Right 4 Columns: Live Sermon & Video Discussion Thread (Hidden when Minimized) */}
+          {/* Right 4 Columns: Live Sermon & Video Discussion Thread (Hidden when Minimized; shown on 'comments' tab on mobile) */}
           {!isMinimized && (
-            <div className="lg:col-span-4 bg-[#121215] border border-zinc-800 rounded-xl p-4 sm:p-5 flex flex-col gap-4">
+            <div
+              className={`${
+                mobilePlayerTab === 'comments' ? 'flex mx-3.5 sm:mx-0' : 'hidden lg:flex'
+              } lg:col-span-4 bg-[#121215] border border-zinc-800 rounded-xl p-4 sm:p-5 flex-col gap-4`}
+            >
               <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
                 <div className="flex items-center gap-2">
                   <MessageSquare className="w-4 h-4 text-amber-400" />

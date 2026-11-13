@@ -438,7 +438,7 @@ export const MinisterSearchBar: React.FC<MinisterSearchBarProps> = ({
                           {discoveredResult.name}
                         </span>
                         <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-mono">
-                          Discovered on YouTube
+                          Global Network
                         </span>
                       </div>
                       <p className="text-xs text-zinc-300 truncate">
@@ -533,7 +533,7 @@ export const MinisterSearchBar: React.FC<MinisterSearchBarProps> = ({
                         disabled={isSearchingWorldwide}
                         className="px-2.5 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-medium whitespace-nowrap shrink-0"
                       >
-                        {isSearchingWorldwide ? 'Searching YouTube...' : 'Search Worldwide on YouTube →'}
+                        {isSearchingWorldwide ? 'Searching Worldwide...' : 'Search Worldwide →'}
                       </button>
                     </div>
                   )}
@@ -543,7 +543,7 @@ export const MinisterSearchBar: React.FC<MinisterSearchBarProps> = ({
                   <Globe className="w-8 h-8 text-amber-400" />
                   <div>
                     <p className="text-sm font-semibold text-zinc-100 mb-0.5">
-                      Discover &ldquo;{query.trim()}&rdquo; on YouTube
+                      Discover &ldquo;{query.trim()}&rdquo; Worldwide
                     </p>
                     <p className="text-xs text-zinc-400 max-w-sm mx-auto">
                       Search public sermons, teachings, prayers, and conferences for this minister worldwide.
@@ -558,12 +558,12 @@ export const MinisterSearchBar: React.FC<MinisterSearchBarProps> = ({
                     {isSearchingWorldwide ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Searching YouTube...</span>
+                        <span>Searching Worldwide...</span>
                       </>
                     ) : (
                       <>
                         <Search className="w-4 h-4" />
-                        <span>Explore This Minister on YouTube &rarr;</span>
+                        <span>Explore This Minister Worldwide &rarr;</span>
                       </>
                     )}
                   </button>
@@ -1009,7 +1009,7 @@ export const DiscoveredMinisterFullProfileView: React.FC<{
               </span>
               <span className="text-zinc-600">·</span>
               <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                Discovered via YouTube
+                Global Christian Archive
               </span>
             </div>
 
@@ -1019,7 +1019,7 @@ export const DiscoveredMinisterFullProfileView: React.FC<{
             </h1>
 
             <p className="text-sm text-zinc-300 max-w-3xl leading-relaxed">
-              {minister.bio || `${minister.name} official Christian teachings, sermons, and conferences available on YouTube.`}
+              {minister.bio || `${minister.name} official Christian teachings, sermons, and conferences streaming on KINGDOM+.`}
             </p>
 
             {/* Tabular Stats Row */}
@@ -1096,7 +1096,7 @@ export const DiscoveredMinisterFullProfileView: React.FC<{
                 onToggleSave={onToggleSave || (() => {})}
               />
               <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/80 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
-                YouTube Stream
+                KINGDOM+ Stream
               </div>
             </div>
           ))}
@@ -1374,7 +1374,7 @@ export const ExploreMinistersView: React.FC<ExploreMinistersViewProps> = ({
               No in-library minister found for &ldquo;{directoryQuery}&rdquo;
             </p>
             <p className="text-xs text-zinc-400">
-              Search YouTube beyond our catalog to discover authentic sermons and teachings from &ldquo;{directoryQuery}&rdquo;.
+              Search the Global Christian Network beyond our catalog to discover authentic sermons and teachings from &ldquo;{directoryQuery}&rdquo;.
             </p>
           </div>
           <button
@@ -1386,12 +1386,12 @@ export const ExploreMinistersView: React.FC<ExploreMinistersViewProps> = ({
             {isSearchingWorldwide ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Searching YouTube Worldwide...</span>
+                <span>Searching Worldwide...</span>
               </>
             ) : (
               <>
                 <Search className="w-4 h-4" />
-                <span>Discover &ldquo;{directoryQuery}&rdquo; on YouTube &rarr;</span>
+                <span>Discover &ldquo;{directoryQuery}&rdquo; Worldwide &rarr;</span>
               </>
             )}
           </button>

@@ -465,9 +465,13 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         </div>
       ) : (
         /* 1-to-1 Real-Time Private Messaging Workspace */
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[540px]">
-          {/* Left 4 Columns: Conversations List */}
-          <div className="lg:col-span-4 bg-[#121215] border border-zinc-800 rounded-xl p-4 flex flex-col gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[480px] sm:min-h-[540px]">
+          {/* Left 4 Columns: Conversations List (Full view on mobile when no chat is open) */}
+          <div
+            className={`${
+              selectedRecipient ? 'hidden lg:flex' : 'flex'
+            } lg:col-span-4 bg-[#121215] border border-zinc-800 rounded-xl p-4 flex-col gap-4`}
+          >
             <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
               <h2 className="text-sm font-semibold text-zinc-100">Direct Conversations</h2>
               <span className="text-xs font-mono tabular-nums text-zinc-400">
@@ -494,7 +498,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
                         setSelectedRecipient(other);
                         fetchMessagesForRecipient(other.id);
                       }}
-                      className={`w-full text-left p-3 rounded-lg border transition-colors flex items-start justify-between gap-3 ${
+                      className={`w-full text-left p-3.5 rounded-lg border transition-colors flex items-start justify-between gap-3 ${
                         isSelected
                           ? 'bg-zinc-900 border-amber-500/40'
                           : 'bg-zinc-900/40 border-zinc-800/60 hover:bg-zinc-900'
@@ -525,25 +529,38 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
             </div>
           </div>
 
-          {/* Right 8 Columns: Active Chat Thread */}
-          <div className="lg:col-span-8 bg-[#121215] border border-zinc-800 rounded-xl p-5 flex flex-col justify-between">
+          {/* Right 8 Columns: Active Chat Thread (Full view on mobile when a conversation is selected) */}
+          <div
+            className={`${
+              selectedRecipient ? 'flex' : 'hidden lg:flex'
+            } lg:col-span-8 bg-[#121215] border border-zinc-800 rounded-xl p-4 sm:p-5 flex-col justify-between`}
+          >
             {selectedRecipient ? (
               <>
-                <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
-                  <div>
-                    <div className="text-sm font-semibold text-zinc-100">
-                      {selectedRecipient.full_name}
-                    </div>
-                    <div className="text-xs text-zinc-400 flex items-center gap-1.5">
-                      <span>@{selectedRecipient.username}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className={selectedRecipient.is_online ? 'text-emerald-400' : 'text-zinc-500'}>
-                        {selectedRecipient.is_online ? 'Online' : 'Offline'}
-                      </span>
+                <div className="flex items-center justify-between gap-2 border-b border-zinc-800 pb-4">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRecipient(null)}
+                      className="lg:hidden px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-amber-400 shrink-0"
+                    >
+                      ← Back
+                    </button>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-zinc-100 truncate">
+                        {selectedRecipient.full_name}
+                      </div>
+                      <div className="text-xs text-zinc-400 flex items-center gap-1.5">
+                        <span className="truncate">@{selectedRecipient.username}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className={selectedRecipient.is_online ? 'text-emerald-400' : 'text-zinc-500'}>
+                          {selectedRecipient.is_online ? 'Online' : 'Offline'}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => handleToggleBlock(selectedRecipient.id)}

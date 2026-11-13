@@ -390,8 +390,8 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
           DEDICATED MOVIE CATEGORIES, STUDIOS & IMPRESSION FILTER BAR
       ==================================================================== */}
       <div className="max-w-[1440px] w-full mx-auto px-4 sm:px-8 flex flex-col gap-10">
-        {/* Category Cards Strip (The 4 Dedicated Christian Movie Categories) */}
-        <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        {/* Category Cards Strip (The 4 Dedicated Christian Movie Categories - Swipeable on Mobile, Grid on Desktop) */}
+        <section className="flex sm:grid sm:grid-cols-2 lg:grid-cols-4 overflow-x-auto no-scrollbar gap-3 sm:gap-4 pb-1 sm:pb-0 snap-x snap-mandatory">
           {movieCategories.map((cat) => {
             const count = allMovieVideos.filter(
               (v) =>
@@ -407,7 +407,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                 onClick={() =>
                   setSelectedCategorySlug(isSelected ? 'all' : cat.slug)
                 }
-                className={`p-3.5 sm:p-5 rounded-xl border text-left transition-all flex flex-col justify-between gap-2 ${
+                className={`min-w-[220px] sm:min-w-0 shrink-0 snap-start p-4 sm:p-5 rounded-xl border text-left transition-all flex flex-col justify-between gap-2 ${
                   isSelected
                     ? 'bg-amber-500/15 border-amber-500'
                     : 'bg-[#121215] border-zinc-800 hover:border-zinc-700'
@@ -445,7 +445,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                 </h3>
               </div>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Discover full-length feature films, dramas, and biblical cinema across YouTube by genre.
+                Discover full-length feature films, dramas, and biblical cinema from the Global Christian Network by genre.
               </p>
             </div>
 
@@ -501,17 +501,17 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                   </span>
                 )}
               </div>
-              <span className="text-xs text-zinc-400 font-medium">Public YouTube Cinema</span>
+              <span className="text-xs text-zinc-400 font-medium">Global Faith Cinema</span>
             </div>
 
             {isSearchingDiscovered ? (
               <div className="py-12 flex flex-col items-center justify-center gap-3 text-center">
                 <Loader2 className="w-7 h-7 text-amber-400 animate-spin" />
                 <p className="text-sm font-medium text-zinc-200">
-                  Searching YouTube for authentic Christian movies &amp; dramas...
+                  Searching Global Christian Network for authentic movies &amp; dramas...
                 </p>
                 <p className="text-xs text-zinc-500">
-                  Connecting to YouTube Data API v3 &amp; ranking verified faith films
+                  Indexing &amp; ranking verified faith films for KINGDOM+ Cinema
                 </p>
               </div>
             ) : discoveredMovies.length > 0 ? (
@@ -528,7 +528,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                       onToggleSave={onToggleSave}
                     />
                     <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/80 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
-                      YouTube Discovery
+                      KINGDOM+ Discovery
                     </div>
                   </div>
                 ))}
