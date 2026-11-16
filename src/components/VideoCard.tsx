@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bookmark, Check, Play, Radio } from 'lucide-react';
+import { Bookmark, Check, Play, Radio, Share2 } from 'lucide-react';
 import { KingdomVideo } from '../types/kingdom.ts';
 import {
   formatCompactNumber,
@@ -11,6 +11,7 @@ import {
   getOptimizedAvatarUrl,
   getOptimizedThumbnailUrl,
 } from '../utils/dataSaver.ts';
+import { shareKingdomVideo } from '../utils/shareVideo.ts';
 
 interface VideoCardProps {
   video: KingdomVideo;
@@ -33,6 +34,7 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
 }) => {
   const [imgError, setImgError] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
+  const [justShared, setJustShared] = useState(false);
   const { isDataSaverActive } = useDataSaver();
 
   const isGenuinelyLive = Boolean(
@@ -110,19 +112,42 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
           </span>
         )}
 
-        {/* Save / Bookmark button (40px+ comfortable mobile touch target) */}
-        <button
-          type="button"
-          onClick={(e) => onToggleSave(video.id, e)}
-          title={isSaved ? 'Remove from Saved Videos' : 'Save to Watchlist'}
-          className="absolute top-2.5 right-2.5 w-9 h-9 rounded-xl bg-black/75 hover:bg-black/90 text-zinc-200 flex items-center justify-center transition-colors z-10"
-        >
-          {isSaved ? (
-            <Check className="w-4 h-4 text-amber-400" />
-          ) : (
-            <Bookmark className="w-4 h-4" />
-          )}
-        </button>
+        {/* Top-Right Quick Actions: Share & Bookmark (Comfortable 36-40px mobile touch targets) */}
+        <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10">
+          <button
+            type="button"
+            onClick={async (e) => {
+              e.stopPropagation();
+              const outcome = await shareKingdomVideo(video);
+              if (outcome !== 'cancelled') {
+                setJustShared(true);
+                window.setTimeout(() => setJustShared(false), 1800);
+              }
+            }}
+            title="Share via WhatsApp or Messages"
+            aria-label={`Share ${video.title}`}
+            className="w-9 h-9 rounded-xl bg-black/75 hover:bg-black/90 text-zinc-200 flex items-center justify-center transition-colors"
+          >
+            {justShared ? (
+              <Check className="w-4 h-4 text-emerald-400" />
+            ) : (
+              <Share2 className="w-4 h-4" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => onToggleSave(video.id, e)}
+            title={isSaved ? 'Remove from Saved Videos' : 'Save to Watchlist'}
+            className="w-9 h-9 rounded-xl bg-black/75 hover:bg-black/90 text-zinc-200 flex items-center justify-center transition-colors"
+          >
+            {isSaved ? (
+              <Check className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Bookmark className="w-4 h-4" />
+            )}
+          </button>
+        </div>
 
         {/* Bottom-right duration text if recorded */}
         {!isGenuinelyLive && durationText && (

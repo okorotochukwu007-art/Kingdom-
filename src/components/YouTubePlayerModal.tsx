@@ -20,6 +20,7 @@ import {
   RotateCcw,
   RotateCw,
   Send,
+  Share2,
   SkipForward,
   Subtitles,
   Volume2,
@@ -39,6 +40,8 @@ import {
   getOptimizedAvatarUrl,
   getOptimizedThumbnailUrl,
 } from '../utils/dataSaver.ts';
+import { shareKingdomVideo } from '../utils/shareVideo.ts';
+import { recordDailyAltarActivity } from '../utils/dailyAltar.ts';
 
 declare global {
   interface Window {
@@ -129,6 +132,8 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
   const [isRotatedLandscape, setIsRotatedLandscape] = useState<boolean>(false);
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
+  const [justSharedVideo, setJustSharedVideo] = useState<boolean>(false);
+  const hasRecordedAltarWatchRef = useRef<boolean>(false);
   const controlsHideTimerRef = useRef<number | null>(null);
   const [isStreamWarmingUp, setIsStreamWarmingUp] = useState<boolean>(false);
   const [introBannerShieldActive, setIntroBannerShieldActive] = useState<boolean>(false);
@@ -511,8 +516,16 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     };
   }, [isPlaying, revealControlsTemporarily]);
 
+  useEffect(() => {
+    if (isPlaying && !hasRecordedAltarWatchRef.current) {
+      hasRecordedAltarWatchRef.current = true;
+      recordDailyAltarActivity('watch', currentUser?.id);
+    }
+  }, [isPlaying, currentUser?.id]);
+
   // Load comments for this video (Server API first, localStorage + Supabase fallback)
   useEffect(() => {
+    hasRecordedAltarWatchRef.current = false;
     setPlayerError(null);
     setIsPlaying(false);
     setIsStartingStream(false);
@@ -2498,6 +2511,31 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const outcome = await shareKingdomVideo(video);
+                          if (outcome !== 'cancelled') {
+                            setJustSharedVideo(true);
+                            window.setTimeout(() => setJustSharedVideo(false), 1800);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 text-xs font-medium transition-colors whitespace-nowrap min-h-[36px]"
+                        title="Share on WhatsApp or Messages"
+                      >
+                        {justSharedVideo ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-emerald-300">Shared</span>
+                          </>
+                        ) : (
+                          <>
+                            <Share2 className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Share</span>
+                          </>
+                        )}
+                      </button>
+
                       <button
                         type="button"
                         onClick={(e) => onToggleSave(video.id, e)}

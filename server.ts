@@ -7,6 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { classifyVideoWithGemini, evaluateMarriageAndRelationships } from './server/geminiService.ts';
 import { NIGERIAN_CHRISTIAN_SEARCH_PHRASES } from './server/seedData.ts';
 import { hashPassword, store } from './server/store.ts';
+import { communityMessagesDb } from './server/communityMessagesDb.ts';
 import {
   buildScoredKingdomVideo,
   computeVideoRankingMetrics,
@@ -28,6 +29,7 @@ import {
 import {
   discoverRealTimeActiveYouTubeLives,
   RealTimeLiveStreamItem,
+  searchRealTimeLiveStreams,
 } from './functions/api/live-check.ts';
 import { discoverDailyFreshVideos } from './functions/api/daily-sync.ts';
 import { searchGlobalChristianVideos } from './functions/api/christian-search.ts';
@@ -37,9 +39,17 @@ import {
   searchChristianMinisterBeyondCatalogue,
   DiscoverySearchScope,
 } from './server/intelligentDiscoveryService.ts';
+import { checkTrendingAndNewChristianMovies } from './server/movieTrendingService.ts';
 import {
   ContentCategory,
+  Conversation,
   DirectMessage,
+  EventAttachment,
+  FellowshipPost,
+  FellowshipPostCategory,
+  FellowshipPostReply,
+  FellowshipRoomId,
+  FellowshipRoomMessage,
   KingdomChannel,
   ModerationReport,
   PrayerEncouragement,
@@ -48,6 +58,13 @@ import {
   VideoComment,
   WatchHistoryEntry,
 } from './src/types/kingdom.ts';
+
+// Ensure every community message (room + direct chat) is backed up inside backend SQLite tables
+communityMessagesDb.backfillFromLegacyStore({
+  roomMessages: store.state.fellowshipRoomMessages || [],
+  conversations: store.state.conversations || [],
+  directMessages: store.state.directMessages || [],
+});
 
 const app = express();
 const PORT = 3000;
@@ -62,9 +79,92 @@ function getAuthenticatedUser(req: Request): UserProfile | null {
   if (!userId) return null;
   const user = store.state.users.find((u) => u.id === userId);
   if (!user || user.is_suspended) return null;
-  // Update online presence timestamp
-  user.is_online = true;
-  user.last_seen_at = new Date().toISOString();
+  touchUserPresence(user, true);
+  return user;
+}
+
+const presencePersistThrottle = new Map<string, number>();
+
+function touchUserPresence(user: UserProfile, isOnline: boolean, forceSave = false) {
+  const nowIso = new Date().toISOString();
+  const wasOnline = user.is_online;
+  user.is_online = isOnline;
+  user.last_seen_at = nowIso;
+
+  const nowMs = Date.now();
+  const lastSaved = presencePersistThrottle.get(user.id) || 0;
+  if (forceSave || wasOnline !== isOnline || nowMs - lastSaved > 30_000) {
+    presencePersistThrottle.set(user.id, nowMs);
+    store.saveToDisk();
+    if (store.supabase && store.supabaseConnected) {
+      Promise.resolve(
+        store.supabase
+          .from('profiles')
+          .update({ is_online: isOnline, last_seen_at: nowIso })
+          .eq('id', user.id)
+      ).catch(() => {});
+    }
+  }
+}
+
+async function resolveCommunityMember(req: Request): Promise<UserProfile | null> {
+  const direct = getAuthenticatedUser(req);
+  if (direct) return direct;
+
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const headerUserId = String(req.headers['x-kingdom-user-id'] || '').trim();
+  const headerUserEmail = String(req.headers['x-kingdom-user-email'] || '')
+    .trim()
+    .toLowerCase();
+
+  if (!token || !headerUserId || !headerUserEmail) return null;
+
+  let user = store.state.users.find(
+    (u) => u.id === headerUserId && u.email.toLowerCase() === headerUserEmail
+  );
+
+  if (!user && store.supabase && store.supabaseConnected) {
+    try {
+      const { data: sbProfile } = await store.supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', headerUserId)
+        .maybeSingle();
+
+      if (
+        sbProfile &&
+        sbProfile.email &&
+        String(sbProfile.email).toLowerCase() === headerUserEmail &&
+        !sbProfile.is_suspended
+      ) {
+        user = {
+          id: sbProfile.id,
+          auth_user_id: sbProfile.auth_user_id,
+          email: sbProfile.email,
+          full_name: sbProfile.full_name || 'Believer',
+          username: sbProfile.username || 'member',
+          avatar_url: sbProfile.avatar_url || '',
+          bio: sbProfile.bio || '',
+          location: sbProfile.location || 'Nigeria',
+          denomination_or_church: sbProfile.denomination_or_church || '',
+          role: sbProfile.role || 'member',
+          is_suspended: Boolean(sbProfile.is_suspended),
+          is_online: true,
+          last_seen_at: new Date().toISOString(),
+          preferences: sbProfile.preferences || { favoriteCategories: [], favoriteMinisters: [] },
+          created_at: sbProfile.created_at || new Date().toISOString(),
+        };
+        store.state.users.push(user);
+        store.saveToDisk();
+      }
+    } catch {
+      // Ignore transient Supabase lookup error
+    }
+  }
+
+  if (!user || user.is_suspended) return null;
+  touchUserPresence(user, true);
   return user;
 }
 
@@ -219,11 +319,10 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   res.json({ token, user: safeProfile });
 });
 
-app.post('/api/auth/logout', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/auth/logout', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (user) {
-    user.is_online = false;
-    user.last_seen_at = new Date().toISOString();
+    touchUserPresence(user, false, true);
   }
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith('Bearer ')) {
@@ -323,9 +422,36 @@ app.get('/api/catalog', (req: Request, res: Response) => {
 
 let cachedLiveStreams: { checkedAt: string; liveStreams: RealTimeLiveStreamItem[] } | null = null;
 let lastLiveCheckMs = 0;
+const liveSearchCache = new Map<
+  string,
+  { checkedAt: string; liveStreams: RealTimeLiveStreamItem[]; timestamp: number }
+>();
 
-app.get('/api/live-check', async (_req: Request, res: Response) => {
+app.get('/api/live-check', async (req: Request, res: Response) => {
+  const q = String(req.query.q || req.query.query || '').trim();
   const now = Date.now();
+
+  if (q.length >= 2) {
+    const cacheKey = q.toLowerCase();
+    const cachedSearch = liveSearchCache.get(cacheKey);
+    if (cachedSearch && now - cachedSearch.timestamp < 30_000) {
+      res.setHeader('Cache-Control', 'public, max-age=30');
+      res.json({
+        checkedAt: cachedSearch.checkedAt,
+        query: q,
+        liveStreams: cachedSearch.liveStreams,
+      });
+      return;
+    }
+
+    const liveStreams = await searchRealTimeLiveStreams(q);
+    const checkedAt = new Date().toISOString();
+    liveSearchCache.set(cacheKey, { checkedAt, liveStreams, timestamp: now });
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json({ checkedAt, query: q, liveStreams });
+    return;
+  }
+
   if (cachedLiveStreams && now - lastLiveCheckMs < 45_000) {
     res.setHeader('Cache-Control', 'public, max-age=45');
     res.json(cachedLiveStreams);
@@ -418,11 +544,25 @@ app.get('/api/discovery/search', async (req: Request, res: Response) => {
 });
 
 app.get('/api/discovery/movies', async (req: Request, res: Response) => {
-  const q = String(req.query.q || '').trim();
+  const q = String(req.query.q || req.query.query || '').trim();
   const genre = String(req.query.genre || 'all').trim();
   try {
     const result = await searchChristianMoviesBeyondLibrary(q, genre);
     res.setHeader('Cache-Control', 'public, max-age=180');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/movies/trending-alerts', async (req: Request, res: Response) => {
+  const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+  try {
+    const result = await checkTrendingAndNewChristianMovies(forceRefresh);
+    res.setHeader(
+      'Cache-Control',
+      forceRefresh ? 'no-store' : 'public, max-age=300'
+    );
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -511,8 +651,8 @@ app.post('/api/videos/:videoId/unavailable', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-app.post('/api/user/watch-progress', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/user/watch-progress', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Authentication required' });
     return;
@@ -549,8 +689,8 @@ app.post('/api/user/watch-progress', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-app.post('/api/user/saved-videos/toggle', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/user/saved-videos/toggle', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Authentication required' });
     return;
@@ -588,8 +728,8 @@ app.get('/api/videos/:videoId/comments', (req: Request, res: Response) => {
   res.json({ comments });
 });
 
-app.post('/api/videos/:videoId/comments', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/videos/:videoId/comments', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to join the video discussion.' });
     return;
@@ -622,8 +762,8 @@ app.post('/api/videos/:videoId/comments', (req: Request, res: Response) => {
   res.json({ comment });
 });
 
-app.post('/api/comments/:commentId/like', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/comments/:commentId/like', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Sign in required' });
     return;
@@ -654,17 +794,69 @@ app.get('/api/prayers', (_req: Request, res: Response) => {
   res.json({ prayers });
 });
 
-app.post('/api/prayers', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+function sanitizeServerAttachment(raw: any): EventAttachment | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const eventTitle = String(raw.event_title || '').trim().slice(0, 140);
+  const eventDate = String(raw.event_date || '').trim().slice(0, 100);
+  const eventLocation = String(raw.event_location || '').trim().slice(0, 140);
+  const rawLink = String(raw.event_link || '').trim().slice(0, 400);
+  let eventLink = '';
+  if (rawLink) {
+    const withProtocol = /^https?:\/\//i.test(rawLink) ? rawLink : `https://${rawLink}`;
+    try {
+      const parsed = new URL(withProtocol);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        eventLink = parsed.toString();
+      }
+    } catch {
+      eventLink = '';
+    }
+  }
+
+  let fileDataUrl = '';
+  let fileName = String(raw.file_name || '').trim().slice(0, 120);
+  let fileMime = String(raw.file_mime || '').trim().slice(0, 80);
+  const rawData = typeof raw.file_data_url === 'string' ? raw.file_data_url : '';
+  if (
+    rawData &&
+    rawData.length <= 2_800_000 &&
+    /^data:(image\/(jpeg|jpg|png|webp|gif)|application\/pdf);base64,/i.test(rawData)
+  ) {
+    fileDataUrl = rawData;
+  } else {
+    fileName = '';
+    fileMime = '';
+  }
+
+  if (!eventTitle && !eventDate && !eventLocation && !eventLink && !fileDataUrl) {
+    return undefined;
+  }
+
+  return {
+    type: eventTitle || eventDate || eventLocation || eventLink ? 'event' : 'flyer',
+    event_title: eventTitle || undefined,
+    event_date: eventDate || undefined,
+    event_location: eventLocation || undefined,
+    event_link: eventLink || undefined,
+    file_name: fileName || undefined,
+    file_mime: fileMime || undefined,
+    file_data_url: fileDataUrl || undefined,
+  };
+}
+
+app.post('/api/prayers', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to submit a prayer request.' });
     return;
   }
-  const { title, content, categoryTag, isAnonymous } = req.body || {};
+  const { title, content, categoryTag, isAnonymous, attachment } = req.body || {};
   if (!title || !content) {
     res.status(400).json({ error: 'Title and prayer request details are required.' });
     return;
   }
+
+  const sanitizedAttachment = sanitizeServerAttachment(attachment);
 
   const prayer: PrayerRequest = {
     id: crypto.randomUUID(),
@@ -680,6 +872,7 @@ app.post('/api/prayers', (req: Request, res: Response) => {
     prayed_by_user_ids: [],
     encouragement_count: 0,
     encouragements: [],
+    ...(sanitizedAttachment ? { attachment: sanitizedAttachment } : {}),
     status: 'active',
     created_at: new Date().toISOString(),
   };
@@ -689,8 +882,8 @@ app.post('/api/prayers', (req: Request, res: Response) => {
   res.json({ prayer });
 });
 
-app.post('/api/prayers/:prayerId/pray', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/prayers/:prayerId/pray', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to support this prayer request.' });
     return;
@@ -711,8 +904,8 @@ app.post('/api/prayers/:prayerId/pray', (req: Request, res: Response) => {
   res.json({ prayer });
 });
 
-app.post('/api/prayers/:prayerId/encourage', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/prayers/:prayerId/encourage', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to post an encouragement.' });
     return;
@@ -743,21 +936,380 @@ app.post('/api/prayers/:prayerId/encourage', (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// 6. COMMUNITY MEMBERS, ONLINE PRESENCE, FOLLOWS & PRIVATE MESSAGING
+// 6. COMMUNITY FEED, FELLOWSHIP ROOMS, MEMBERS & PRIVATE MESSAGING
 // ============================================================================
-app.get('/api/community/members', (req: Request, res: Response) => {
-  const currentUser = getAuthenticatedUser(req);
+const VALID_FELLOWSHIP_CATEGORIES = new Set<FellowshipPostCategory>([
+  'testimony',
+  'praise_report',
+  'sermon_note',
+  'event',
+  'fellowship',
+]);
+
+const VALID_ROOM_IDS = new Set<FellowshipRoomId>([
+  'morning-altar',
+  'singles-marriage',
+  'worshippers-choir',
+  'bible-study-purpose',
+  'intercessors',
+]);
+
+app.get('/api/community/feed', (_req: Request, res: Response) => {
+  const posts = [...(store.state.fellowshipPosts || [])].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+  res.json({ posts });
+});
+
+app.post('/api/community/heartbeat', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
+  if (!user) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+  touchUserPresence(user, true);
   const nowMs = Date.now();
+  const onlineCount = store.state.users.filter(
+    (u) => !u.is_suspended && u.is_online && nowMs - new Date(u.last_seen_at).getTime() < 3 * 60 * 1000
+  ).length;
+  res.json({
+    ok: true,
+    is_online: true,
+    last_seen_at: user.last_seen_at,
+    onlineCount,
+  });
+});
+
+app.post('/api/community/offline', express.text({ type: '*/*' }), async (req: Request, res: Response) => {
+  let user = await resolveCommunityMember(req);
+  if (!user && req.body) {
+    try {
+      const parsed = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+      const uid = String(parsed?.userId || '').trim();
+      const email = String(parsed?.email || '').trim().toLowerCase();
+      if (uid && email) {
+        user = store.state.users.find(
+          (u) => u.id === uid && u.email.toLowerCase() === email && !u.is_suspended
+        ) || null;
+      }
+    } catch {
+      // Ignore malformed beacon body
+    }
+  }
+  if (user) {
+    touchUserPresence(user, false, true);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/community/feed', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
+  if (!user) {
+    res.status(401).json({ error: 'Please sign in to share with the fellowship.' });
+    return;
+  }
+  const { title, content, category, attachment } = req.body || {};
+  const trimmedContent = String(content || '').trim();
+  const trimmedTitle = String(title || '').trim();
+  const sanitizedAttachment = sanitizeServerAttachment(attachment);
+
+  if (!trimmedContent && !sanitizedAttachment) {
+    res.status(400).json({ error: 'Please write a message, testimony, or attach an event.' });
+    return;
+  }
+  const postCategory: FellowshipPostCategory = VALID_FELLOWSHIP_CATEGORIES.has(category)
+    ? category
+    : sanitizedAttachment
+      ? 'event'
+      : 'testimony';
+
+  const post: FellowshipPost = {
+    id: crypto.randomUUID(),
+    user_id: user.id,
+    user_full_name: user.full_name,
+    user_username: user.username,
+    user_location: user.location || 'Nigeria',
+    user_church: user.denomination_or_church || '',
+    category: postCategory,
+    title: trimmedTitle,
+    content: trimmedContent,
+    ...(sanitizedAttachment ? { attachment: sanitizedAttachment } : {}),
+    amen_user_ids: [],
+    praise_user_ids: [],
+    replies: [],
+    created_at: new Date().toISOString(),
+  };
+
+  store.state.fellowshipPosts.unshift(post);
+  store.saveToDisk();
+  res.json({ post });
+});
+
+app.post('/api/community/feed/:postId/react', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
+  if (!user) {
+    res.status(401).json({ error: 'Please sign in to react.' });
+    return;
+  }
+  const post = store.state.fellowshipPosts.find((p) => p.id === req.params.postId);
+  if (!post) {
+    res.status(404).json({ error: 'Post not found.' });
+    return;
+  }
+  const reactionType = req.body?.type === 'praise' ? 'praise' : 'amen';
+  const targetList = reactionType === 'praise' ? post.praise_user_ids : post.amen_user_ids;
+  const idx = targetList.indexOf(user.id);
+  if (idx >= 0) {
+    targetList.splice(idx, 1);
+  } else {
+    targetList.push(user.id);
+  }
+  store.saveToDisk();
+  res.json({ post });
+});
+
+app.post('/api/community/feed/:postId/reply', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
+  if (!user) {
+    res.status(401).json({ error: 'Please sign in to reply.' });
+    return;
+  }
+  const post = store.state.fellowshipPosts.find((p) => p.id === req.params.postId);
+  if (!post) {
+    res.status(404).json({ error: 'Post not found.' });
+    return;
+  }
+  const content = String(req.body?.content || '').trim();
+  if (!content) {
+    res.status(400).json({ error: 'Reply message cannot be empty.' });
+    return;
+  }
+  const reply: FellowshipPostReply = {
+    id: crypto.randomUUID(),
+    post_id: post.id,
+    user_id: user.id,
+    user_full_name: user.full_name,
+    user_username: user.username,
+    user_location: user.location || 'Nigeria',
+    content,
+    created_at: new Date().toISOString(),
+  };
+  post.replies.push(reply);
+  store.saveToDisk();
+  res.json({ post });
+});
+
+app.get('/api/community/rooms/summary', (_req: Request, res: Response) => {
+  const summary = communityMessagesDb.getRoomSummary(VALID_ROOM_IDS);
+  res.json({ summary });
+});
+
+app.get('/api/community/rooms/:roomId/messages', (req: Request, res: Response) => {
+  const roomId = req.params.roomId as FellowshipRoomId;
+  if (!VALID_ROOM_IDS.has(roomId)) {
+    res.status(400).json({ error: 'Invalid fellowship room.' });
+    return;
+  }
+  const messages = communityMessagesDb.getRoomMessages(roomId, 100);
+  res.json({ messages });
+});
+
+app.post('/api/community/rooms/:roomId/messages', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
+  if (!user) {
+    res.status(401).json({ error: 'Please sign in to chat in Fellowship Rooms.' });
+    return;
+  }
+  const roomId = req.params.roomId as FellowshipRoomId;
+  if (!VALID_ROOM_IDS.has(roomId)) {
+    res.status(400).json({ error: 'Invalid fellowship room.' });
+    return;
+  }
+  const content = String(req.body?.content || '').trim();
+  const sanitizedAttachment = sanitizeServerAttachment(req.body?.attachment);
+  if (!content && !sanitizedAttachment) {
+    res.status(400).json({ error: 'Message or event attachment cannot be empty.' });
+    return;
+  }
+  const msg: FellowshipRoomMessage = {
+    id: crypto.randomUUID(),
+    room_id: roomId,
+    user_id: user.id,
+    user_full_name: user.full_name,
+    user_username: user.username,
+    user_location: user.location || 'Nigeria',
+    content,
+    ...(sanitizedAttachment ? { attachment: sanitizedAttachment } : {}),
+    amen_user_ids: [],
+    created_at: new Date().toISOString(),
+  };
+
+  communityMessagesDb.insertRoomMessage(msg);
+  store.state.fellowshipRoomMessages.push(msg);
+  store.saveToDisk();
+
+  if (store.supabase && store.supabaseConnected) {
+    Promise.resolve(
+      store.supabase.from('fellowship_room_messages').upsert({
+        id: msg.id,
+        room_id: msg.room_id,
+        user_id: msg.user_id,
+        user_full_name: msg.user_full_name,
+        user_username: msg.user_username,
+        user_location: msg.user_location,
+        content: msg.content,
+        attachment: msg.attachment || null,
+        amen_user_ids: msg.amen_user_ids,
+        created_at: msg.created_at,
+      })
+    ).catch(() => {});
+
+    Promise.resolve(
+      store.supabase.from('community_messages').upsert({
+        id: msg.id,
+        message_scope: 'room',
+        room_id: msg.room_id,
+        sender_id: msg.user_id,
+        sender_full_name: msg.user_full_name,
+        sender_username: msg.user_username,
+        sender_location: msg.user_location,
+        content: msg.content,
+        attachment: msg.attachment || null,
+        amen_user_ids: msg.amen_user_ids,
+        is_read: true,
+        created_at: msg.created_at,
+      })
+    ).catch(() => {});
+  }
+
+  res.json({ message: msg });
+});
+
+app.post('/api/community/rooms/:roomId/messages/:msgId/amen', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
+  if (!user) {
+    res.status(401).json({ error: 'Please sign in to react.' });
+    return;
+  }
+  const roomId = req.params.roomId as FellowshipRoomId;
+  const updatedMsg = communityMessagesDb.toggleRoomMessageAmen(roomId, req.params.msgId, user.id);
+  if (!updatedMsg) {
+    res.status(404).json({ error: 'Message not found.' });
+    return;
+  }
+
+  const legacyMsg = (store.state.fellowshipRoomMessages || []).find(
+    (m) => m.id === req.params.msgId && m.room_id === roomId
+  );
+  if (legacyMsg) {
+    legacyMsg.amen_user_ids = [...updatedMsg.amen_user_ids];
+    store.saveToDisk();
+  }
+
+  if (store.supabase && store.supabaseConnected) {
+    Promise.resolve(
+      store.supabase
+        .from('fellowship_room_messages')
+        .update({ amen_user_ids: updatedMsg.amen_user_ids })
+        .eq('id', updatedMsg.id)
+    ).catch(() => {});
+  }
+
+  res.json({ message: updatedMsg });
+});
+
+app.get('/api/community/members', async (req: Request, res: Response) => {
+  const currentUser = await resolveCommunityMember(req);
+  const nowMs = Date.now();
+  const ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
+  // Merge members & fresher presence state from Supabase profiles table
+  if (store.supabase && store.supabaseConnected) {
+    try {
+      const { data: sbProfiles } = await store.supabase
+        .from('profiles')
+        .select('*')
+        .eq('is_suspended', false)
+        .limit(200);
+      if (Array.isArray(sbProfiles)) {
+        for (const p of sbProfiles) {
+          if (!p?.id || !p?.email) continue;
+          const existing = store.state.users.find(
+            (u) => u.id === p.id || u.email.toLowerCase() === String(p.email).toLowerCase()
+          );
+          if (!existing) {
+            store.state.users.push({
+              id: p.id,
+              auth_user_id: p.auth_user_id,
+              email: p.email,
+              full_name: p.full_name || 'Believer',
+              username: p.username || 'member',
+              avatar_url: p.avatar_url || '',
+              bio: p.bio || '',
+              location: p.location || 'Nigeria',
+              denomination_or_church: p.denomination_or_church || '',
+              role: p.role || 'member',
+              is_suspended: Boolean(p.is_suspended),
+              is_online: Boolean(p.is_online),
+              last_seen_at: p.last_seen_at || new Date().toISOString(),
+              preferences: p.preferences || { favoriteCategories: [], favoriteMinisters: [] },
+              created_at: p.created_at || new Date().toISOString(),
+            });
+          } else {
+            const sbSeenMs = p.last_seen_at ? new Date(p.last_seen_at).getTime() : 0;
+            const localSeenMs = existing.last_seen_at ? new Date(existing.last_seen_at).getTime() : 0;
+            if (sbSeenMs > localSeenMs) {
+              existing.is_online = Boolean(p.is_online);
+              existing.last_seen_at = p.last_seen_at;
+            }
+            if (p.full_name) existing.full_name = p.full_name;
+            if (p.location !== undefined) existing.location = p.location || existing.location;
+            if (p.denomination_or_church !== undefined) {
+              existing.denomination_or_church = p.denomination_or_church;
+            }
+            if (p.bio !== undefined) existing.bio = p.bio;
+          }
+        }
+      }
+
+      if (currentUser) {
+        const { data: sbFollows } = await store.supabase
+          .from('user_follows')
+          .select('following_id')
+          .eq('follower_id', currentUser.id);
+        if (Array.isArray(sbFollows)) {
+          for (const row of sbFollows) {
+            const targetId = row?.following_id;
+            if (!targetId) continue;
+            const alreadyLocal = store.state.userFollows.some(
+              (f) => f.follower_id === currentUser.id && f.following_id === targetId
+            );
+            if (!alreadyLocal) {
+              store.state.userFollows.push({
+                id: crypto.randomUUID(),
+                follower_id: currentUser.id,
+                following_id: targetId,
+                created_at: new Date().toISOString(),
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore transient Supabase read failure
+    }
+  }
 
   const members = store.state.users
     .filter((u) => !u.is_suspended)
     .map((u) => {
-      // Consider a member online if active within the last 10 minutes
-      const isRecentlyActive = nowMs - new Date(u.last_seen_at).getTime() < 10 * 60 * 1000;
+      const isSelf = currentUser && u.id === currentUser.id;
+      const isRecentlyActive =
+        nowMs - new Date(u.last_seen_at || 0).getTime() < ONLINE_WINDOW_MS;
       const { password_hash: _removed, ...safe } = u;
       return {
         ...safe,
-        is_online: Boolean(u.is_online && isRecentlyActive),
+        is_online: Boolean(isSelf || (u.is_online && isRecentlyActive)),
       };
     });
 
@@ -780,13 +1332,13 @@ app.get('/api/community/members', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/community/follow', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/community/follow', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to connect with members.' });
     return;
   }
-  const { targetUserId } = req.body || {};
+  const targetUserId = String(req.body?.targetUserId || '').trim();
   if (!targetUserId || targetUserId === user.id) {
     res.status(400).json({ error: 'Invalid member selection.' });
     return;
@@ -794,26 +1346,50 @@ app.post('/api/community/follow', (req: Request, res: Response) => {
   const idx = store.state.userFollows.findIndex(
     (f) => f.follower_id === user.id && f.following_id === targetUserId
   );
+  let connected = false;
   if (idx >= 0) {
     store.state.userFollows.splice(idx, 1);
+    if (store.supabase && store.supabaseConnected) {
+      Promise.resolve(
+        store.supabase
+          .from('user_follows')
+          .delete()
+          .eq('follower_id', user.id)
+          .eq('following_id', targetUserId)
+      ).catch(() => {});
+    }
   } else {
+    connected = true;
     store.state.userFollows.push({
       id: crypto.randomUUID(),
       follower_id: user.id,
       following_id: targetUserId,
       created_at: new Date().toISOString(),
     });
+    if (store.supabase && store.supabaseConnected) {
+      Promise.resolve(
+        store.supabase.from('user_follows').upsert(
+          {
+            follower_id: user.id,
+            following_id: targetUserId,
+            created_at: new Date().toISOString(),
+          },
+          { onConflict: 'follower_id,following_id' }
+        )
+      ).catch(() => {});
+    }
   }
   store.saveToDisk();
   res.json({
+    connected,
     followingIds: store.state.userFollows
       .filter((f) => f.follower_id === user.id)
       .map((f) => f.following_id),
   });
 });
 
-app.post('/api/community/block', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/community/block', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Sign in required' });
     return;
@@ -840,35 +1416,65 @@ app.post('/api/community/block', (req: Request, res: Response) => {
   });
 });
 
-app.get('/api/messages/conversations', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.get('/api/messages/conversations', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Sign in required' });
     return;
   }
 
+  // Merge cloud Supabase conversations if available
+  if (store.supabase && store.supabaseConnected) {
+    try {
+      const { data: sbConvs } = await store.supabase
+        .from('conversations')
+        .select('*')
+        .or(`participant_one_id.eq.${user.id},participant_two_id.eq.${user.id}`)
+        .order('last_message_at', { ascending: false })
+        .limit(100);
+      if (Array.isArray(sbConvs)) {
+        for (const row of sbConvs) {
+          if (!row?.id || !row?.participant_one_id || !row?.participant_two_id) continue;
+          communityMessagesDb.upsertConversation({
+            id: row.id,
+            participant_one_id: row.participant_one_id,
+            participant_two_id: row.participant_two_id,
+            last_message_text: row.last_message_text || '',
+            last_message_at: row.last_message_at || new Date().toISOString(),
+            unread_count: 0,
+          });
+        }
+      }
+    } catch {
+      // Ignore transient Supabase read error
+    }
+  }
+
+  const nowMs = Date.now();
+  const ONLINE_WINDOW_MS = 3 * 60 * 1000;
   const blockedByMe = new Set(
     store.state.userBlocks.filter((b) => b.blocker_id === user.id).map((b) => b.blocked_id)
   );
 
-  const convs = store.state.conversations
-    .filter((c) => c.participant_one_id === user.id || c.participant_two_id === user.id)
+  const dbConvs = communityMessagesDb.getUserConversations(user.id);
+  const convs = dbConvs
     .map((c) => {
       const otherId = c.participant_one_id === user.id ? c.participant_two_id : c.participant_one_id;
       const otherRaw = store.state.users.find((u) => u.id === otherId);
       const otherParticipant = otherRaw
         ? (() => {
             const { password_hash: _, ...safe } = otherRaw;
-            return safe;
+            const isRecentlyActive =
+              nowMs - new Date(safe.last_seen_at || 0).getTime() < ONLINE_WINDOW_MS;
+            return {
+              ...safe,
+              is_online: Boolean(safe.is_online && isRecentlyActive),
+            };
           })()
         : undefined;
-      const unreadCount = store.state.directMessages.filter(
-        (m) => m.conversation_id === c.id && m.sender_id !== user.id && !m.is_read
-      ).length;
       return {
         ...c,
         other_participant: otherParticipant,
-        unread_count: unreadCount,
       };
     })
     .filter((c) => c.other_participant && !blockedByMe.has(c.other_participant.id))
@@ -877,51 +1483,125 @@ app.get('/api/messages/conversations', (req: Request, res: Response) => {
   res.json({ conversations: convs });
 });
 
-app.get('/api/messages/:otherUserId', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.get('/api/messages/:otherUserId', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Sign in required' });
     return;
   }
   const otherId = req.params.otherUserId;
-  let conv = store.state.conversations.find(
-    (c) =>
-      (c.participant_one_id === user.id && c.participant_two_id === otherId) ||
-      (c.participant_one_id === otherId && c.participant_two_id === user.id)
-  );
+  let conv = communityMessagesDb.findConversationBetween(user.id, otherId);
+
+  if (!conv && store.supabase && store.supabaseConnected) {
+    try {
+      const { data: sbConv } = await store.supabase
+        .from('conversations')
+        .select('*')
+        .or(
+          `and(participant_one_id.eq.${user.id},participant_two_id.eq.${otherId}),and(participant_one_id.eq.${otherId},participant_two_id.eq.${user.id})`
+        )
+        .maybeSingle();
+      if (sbConv?.id) {
+        conv = {
+          id: sbConv.id,
+          participant_one_id: sbConv.participant_one_id,
+          participant_two_id: sbConv.participant_two_id,
+          last_message_text: sbConv.last_message_text || '',
+          last_message_at: sbConv.last_message_at || new Date().toISOString(),
+          unread_count: 0,
+        };
+        communityMessagesDb.upsertConversation(conv);
+      }
+    } catch {
+      // Ignore transient Supabase lookup error
+    }
+  }
+
   if (!conv) {
     res.json({ messages: [], conversationId: null });
     return;
   }
 
-  // Mark messages from other user as read
-  let updated = false;
-  for (const msg of store.state.directMessages) {
-    if (msg.conversation_id === conv.id && msg.sender_id === otherId && !msg.is_read) {
-      msg.is_read = true;
-      msg.read_at = new Date().toISOString();
-      updated = true;
+  if (store.supabase && store.supabaseConnected) {
+    try {
+      const { data: sbMsgs } = await store.supabase
+        .from('direct_messages')
+        .select('*')
+        .eq('conversation_id', conv.id)
+        .order('created_at', { ascending: true })
+        .limit(200);
+      if (Array.isArray(sbMsgs)) {
+        for (const m of sbMsgs) {
+          if (!m?.id) continue;
+          const recipientId =
+            m.sender_id === conv.participant_one_id
+              ? conv.participant_two_id
+              : conv.participant_one_id;
+          const sender = store.state.users.find((u) => u.id === m.sender_id);
+          communityMessagesDb.insertDirectMessage({
+            message: {
+              id: m.id,
+              conversation_id: m.conversation_id,
+              sender_id: m.sender_id,
+              content: m.content || '',
+              ...(m.attachment ? { attachment: m.attachment } : {}),
+              is_read: Boolean(m.is_read),
+              ...(m.read_at ? { read_at: m.read_at } : {}),
+              created_at: m.created_at || new Date().toISOString(),
+            },
+            recipientId,
+            senderFullName: sender?.full_name || 'Believer',
+            senderUsername: sender?.username || 'member',
+            senderLocation: sender?.location || 'Nigeria',
+          });
+        }
+      }
+    } catch {
+      // Ignore transient Supabase read error
     }
   }
-  if (updated) store.saveToDisk();
 
-  const messages = store.state.directMessages
-    .filter((m) => m.conversation_id === conv.id)
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  // Mark messages from other user as read
+  const readUpdated = communityMessagesDb.markDirectMessagesRead(conv.id, otherId);
+  if (readUpdated) {
+    for (const msg of store.state.directMessages) {
+      if (msg.conversation_id === conv.id && msg.sender_id === otherId && !msg.is_read) {
+        msg.is_read = true;
+        msg.read_at = new Date().toISOString();
+      }
+    }
+    store.saveToDisk();
+    if (store.supabase && store.supabaseConnected) {
+      Promise.resolve(
+        store.supabase
+          .from('direct_messages')
+          .update({ is_read: true, read_at: new Date().toISOString() })
+          .eq('conversation_id', conv.id)
+          .eq('sender_id', otherId)
+          .eq('is_read', false)
+      ).catch(() => {});
+    }
+  }
 
+  const messages = communityMessagesDb.getDirectMessages(conv.id, 200);
   res.json({ messages, conversationId: conv.id });
 });
 
-app.post('/api/messages/:otherUserId', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/messages/:otherUserId', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Sign in required' });
     return;
   }
   const otherId = req.params.otherUserId;
-  const { content } = req.body || {};
-  if (!content || !String(content).trim()) {
-    res.status(400).json({ error: 'Message content cannot be empty.' });
+  if (!otherId || otherId === user.id) {
+    res.status(400).json({ error: 'Cannot start a private chat with yourself.' });
+    return;
+  }
+  const trimmedContent = String(req.body?.content || '').trim();
+  const sanitizedAttachment = sanitizeServerAttachment(req.body?.attachment);
+  if (!trimmedContent && !sanitizedAttachment) {
+    res.status(400).json({ error: 'Message content or attachment cannot be empty.' });
     return;
   }
 
@@ -936,45 +1616,106 @@ app.post('/api/messages/:otherUserId', (req: Request, res: Response) => {
     return;
   }
 
-  let conv = store.state.conversations.find(
-    (c) =>
-      (c.participant_one_id === user.id && c.participant_two_id === otherId) ||
-      (c.participant_one_id === otherId && c.participant_two_id === user.id)
-  );
+  const nowIso = new Date().toISOString();
+  const previewText =
+    trimmedContent ||
+    (sanitizedAttachment?.event_title
+      ? `Event: ${sanitizedAttachment.event_title}`
+      : 'Attached an event flyer');
+
+  let conv: Conversation | null = communityMessagesDb.findConversationBetween(user.id, otherId);
   if (!conv) {
     conv = {
       id: crypto.randomUUID(),
       participant_one_id: user.id,
       participant_two_id: otherId,
-      last_message_text: String(content).trim(),
-      last_message_at: new Date().toISOString(),
+      last_message_text: previewText,
+      last_message_at: nowIso,
       unread_count: 0,
     };
-    store.state.conversations.unshift(conv);
   } else {
-    conv.last_message_text = String(content).trim();
-    conv.last_message_at = new Date().toISOString();
+    conv.last_message_text = previewText;
+    conv.last_message_at = nowIso;
+  }
+  communityMessagesDb.upsertConversation(conv);
+
+  const legacyConv = store.state.conversations.find((c) => c.id === conv!.id);
+  if (!legacyConv) {
+    store.state.conversations.unshift({ ...conv });
+  } else {
+    legacyConv.last_message_text = previewText;
+    legacyConv.last_message_at = nowIso;
   }
 
   const message: DirectMessage = {
     id: crypto.randomUUID(),
     conversation_id: conv.id,
     sender_id: user.id,
-    content: String(content).trim(),
+    content: trimmedContent,
+    ...(sanitizedAttachment ? { attachment: sanitizedAttachment } : {}),
     is_read: false,
-    created_at: new Date().toISOString(),
+    created_at: nowIso,
   };
 
+  communityMessagesDb.insertDirectMessage({
+    message,
+    recipientId: otherId,
+    senderFullName: user.full_name,
+    senderUsername: user.username,
+    senderLocation: user.location || 'Nigeria',
+  });
   store.state.directMessages.push(message);
   store.saveToDisk();
+
+  if (store.supabase && store.supabaseConnected) {
+    Promise.resolve(
+      store.supabase.from('conversations').upsert({
+        id: conv.id,
+        participant_one_id: conv.participant_one_id,
+        participant_two_id: conv.participant_two_id,
+        last_message_text: conv.last_message_text,
+        last_message_at: conv.last_message_at,
+        created_at: conv.last_message_at,
+      })
+    ).catch(() => {});
+
+    Promise.resolve(
+      store.supabase.from('direct_messages').upsert({
+        id: message.id,
+        conversation_id: message.conversation_id,
+        sender_id: message.sender_id,
+        content: message.content,
+        is_read: false,
+        created_at: message.created_at,
+      })
+    ).catch(() => {});
+
+    Promise.resolve(
+      store.supabase.from('community_messages').upsert({
+        id: message.id,
+        message_scope: 'direct',
+        conversation_id: message.conversation_id,
+        sender_id: user.id,
+        sender_full_name: user.full_name,
+        sender_username: user.username,
+        sender_location: user.location || 'Nigeria',
+        recipient_id: otherId,
+        content: message.content,
+        attachment: message.attachment || null,
+        is_read: false,
+        created_at: message.created_at,
+      })
+    ).catch(() => {});
+  }
+
   res.json({ message, conversation: conv });
 });
 
 // ============================================================================
 // 7. MODERATION REPORTS
 // ============================================================================
-app.post('/api/reports', (req: Request, res: Response) => {
-  const user = getAuthenticatedUser(req);
+app.post('/api/reports', async (req: Request, res: Response) => {
+  const user = await resolveCommunityMember(req);
   if (!user) {
     res.status(401).json({ error: 'Please sign in to submit a report.' });
     return;
@@ -1910,6 +2651,14 @@ async function startServer() {
   syncDailyFreshVideosIntoStore().catch(() => {});
   setInterval(() => {
     syncDailyFreshVideosIntoStore().catch(() => {});
+  }, 30 * 60 * 1000);
+
+  // Automatic YouTube Christian Movie Release & Trending Watcher (warms up 8s after boot + every 30 minutes)
+  setTimeout(() => {
+    checkTrendingAndNewChristianMovies(false).catch(() => {});
+  }, 8000);
+  setInterval(() => {
+    checkTrendingAndNewChristianMovies(true).catch(() => {});
   }, 30 * 60 * 1000);
 
   if (process.env.NODE_ENV !== 'production') {

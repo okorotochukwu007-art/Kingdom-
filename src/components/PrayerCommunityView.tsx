@@ -1,12 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { Flag, HeartHandshake, MessageCircle, Plus, Send } from 'lucide-react';
-import { PrayerRequest, UserProfile } from '../types/kingdom.ts';
+import { Flag, HeartHandshake, MessageCircle, Paperclip, Plus, Send } from 'lucide-react';
+import { EventAttachment, PrayerRequest, UserProfile } from '../types/kingdom.ts';
 import { formatRelativeDate } from '../utils/formatters.ts';
+import { recordDailyAltarActivity } from '../utils/dailyAltar.ts';
+import { normalizeOutgoingAttachment } from '../utils/attachmentHelper.ts';
+import { EventAttachmentCard, EventAttachmentComposer } from './EventAttachmentUI.tsx';
 
 interface PrayerCommunityViewProps {
   currentUser: UserProfile | null;
   authToken: string | null;
   onRequireAuth: () => void;
+  embedded?: boolean;
+  onStartPrivateChat?: (member: {
+    id: string;
+    full_name: string;
+    username: string;
+    location?: string;
+  }) => void;
 }
 
 const PRAYER_TOPICS = [
@@ -22,6 +32,8 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
   currentUser,
   authToken,
   onRequireAuth,
+  embedded = false,
+  onStartPrivateChat,
 }) => {
   const [prayers, setPrayers] = useState<PrayerRequest[]>([]);
   const [selectedTopic, setSelectedTopic] = useState('All Requests');
@@ -31,6 +43,8 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
   const [content, setContent] = useState('');
   const [categoryTag, setCategoryTag] = useState('Healing & Family');
   const [isAnonymous, setIsAnonymous] = useState(false);
+  const [showAttachmentTray, setShowAttachmentTray] = useState(false);
+  const [draftAttachment, setDraftAttachment] = useState<Partial<EventAttachment>>({});
   const [submitting, setSubmitting] = useState(false);
 
   const [activeEncourageId, setActiveEncourageId] = useState<string | null>(null);
@@ -67,6 +81,15 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
     fetchPrayers();
   }, []);
 
+  const buildAuthHeaders = (includeJson = false): Record<string, string> => {
+    const headers: Record<string, string> = {};
+    if (includeJson) headers['Content-Type'] = 'application/json';
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    if (currentUser?.id) headers['X-Kingdom-User-Id'] = currentUser.id;
+    if (currentUser?.email) headers['X-Kingdom-User-Email'] = currentUser.email;
+    return headers;
+  };
+
   const handleSubmitPrayer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || !authToken) {
@@ -76,18 +99,20 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
     if (!title.trim() || !content.trim()) return;
 
     setSubmitting(true);
+    recordDailyAltarActivity('pray', currentUser.id);
+    const outgoingAttachment = showAttachmentTray
+      ? normalizeOutgoingAttachment(draftAttachment)
+      : undefined;
     try {
       const res = await fetch('/api/prayers', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
+        headers: buildAuthHeaders(true),
         body: JSON.stringify({
           title: title.trim(),
           content: content.trim(),
           categoryTag,
           isAnonymous,
+          ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
         }),
       });
       const ct = res.headers.get('content-type') || '';
@@ -97,6 +122,8 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
           setPrayers((prev) => [data.prayer, ...prev]);
           setTitle('');
           setContent('');
+          setDraftAttachment({});
+          setShowAttachmentTray(false);
           setShowForm(false);
           return;
         }
@@ -115,6 +142,7 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
         prayed_by_user_ids: [currentUser.id],
         encouragement_count: 0,
         encouragements: [],
+        ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
         status: 'active',
         created_at: new Date().toISOString(),
       };
@@ -127,6 +155,8 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
       });
       setTitle('');
       setContent('');
+      setDraftAttachment({});
+      setShowAttachmentTray(false);
       setShowForm(false);
     } finally {
       setSubmitting(false);
@@ -138,10 +168,11 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
       onRequireAuth();
       return;
     }
+    recordDailyAltarActivity('pray', currentUser.id);
     try {
       const res = await fetch(`/api/prayers/${prayerId}/pray`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
+        headers: buildAuthHeaders(false),
       });
       const ct = res.headers.get('content-type') || '';
       if (res.ok && ct.includes('application/json')) {
@@ -174,10 +205,7 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
     try {
       const res = await fetch(`/api/prayers/${prayerId}/encourage`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
+        headers: buildAuthHeaders(true),
         body: JSON.stringify({ content: encourageText.trim() }),
       });
       const ct = res.headers.get('content-type') || '';
@@ -225,10 +253,7 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
     try {
       await fetch('/api/reports', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
+        headers: buildAuthHeaders(true),
         body: JSON.stringify({
           targetType: 'prayer',
           targetId: prayer.id,
@@ -246,7 +271,13 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
   );
 
   return (
-    <section className="max-w-[1440px] mx-auto px-4 sm:px-8 py-8 flex flex-col gap-8">
+    <section
+      className={
+        embedded
+          ? 'w-full flex flex-col gap-6'
+          : 'max-w-[1440px] mx-auto px-4 sm:px-8 py-8 flex flex-col gap-8'
+      }
+    >
       {/* Sanctuary Banner */}
       <div className="relative rounded-2xl overflow-hidden border border-zinc-800 bg-zinc-950 min-h-[240px] flex items-end p-6 sm:p-10">
         <img
@@ -340,16 +371,43 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
             />
           </div>
 
+          {showAttachmentTray && (
+            <EventAttachmentComposer
+              value={draftAttachment}
+              onChange={setDraftAttachment}
+              onRemove={() => {
+                setShowAttachmentTray(false);
+                setDraftAttachment({});
+              }}
+            />
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-            <label className="inline-flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={isAnonymous}
-                onChange={(e) => setIsAnonymous(e.target.checked)}
-                className="rounded border-zinc-700 bg-zinc-900 text-amber-500"
-              />
-              <span>Post anonymously (hide my name on the public wall)</span>
-            </label>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowAttachmentTray(!showAttachmentTray)}
+                title="Attach event flyer or meeting details"
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                  showAttachmentTray
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
+                }`}
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+                <span>Attach Event / Flyer</span>
+              </button>
+
+              <label className="inline-flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isAnonymous}
+                  onChange={(e) => setIsAnonymous(e.target.checked)}
+                  className="rounded border-zinc-700 bg-zinc-900 text-amber-500"
+                />
+                <span>Post anonymously</span>
+              </label>
+            </div>
 
             <button
               type="submit"
@@ -429,11 +487,15 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
                   <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-line">
                     {prayer.content}
                   </p>
+
+                  {prayer.attachment && (
+                    <EventAttachmentCard attachment={prayer.attachment} compact />
+                  )}
                 </div>
 
                 <div className="pt-4 border-t border-zinc-800/80 flex flex-col gap-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2.5">
+                    <div className="flex items-center flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={() => handlePraySupport(prayer.id)}
@@ -458,6 +520,27 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
                         <MessageCircle className="w-3.5 h-3.5" />
                         <span>Encourage ({prayer.encouragements.length})</span>
                       </button>
+
+                      {onStartPrivateChat &&
+                        !prayer.is_anonymous &&
+                        prayer.user_id &&
+                        prayer.user_id !== currentUser?.id && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onStartPrivateChat({
+                                id: prayer.user_id,
+                                full_name: prayer.user_full_name,
+                                username: prayer.user_username,
+                                location: prayer.user_location,
+                              })
+                            }
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-amber-300 transition-colors whitespace-nowrap shrink-0"
+                          >
+                            <Send className="w-3 h-3" />
+                            <span>Private Chat</span>
+                          </button>
+                        )}
                     </div>
 
                     <button
@@ -479,7 +562,7 @@ export const PrayerCommunityView: React.FC<PrayerCommunityViewProps> = ({
                         value={encourageText}
                         onChange={(e) => setEncourageText(e.target.value)}
                         placeholder="Write a word of encouragement or scripture..."
-                        className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+                        className="flex-1 min-w-0 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
                       />
                       <button
                         type="button"

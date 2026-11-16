@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BellRing,
   Bookmark,
   Check,
+  ChevronLeft,
   ChevronRight,
   Compass,
   Film,
@@ -9,7 +11,9 @@ import {
   Heart,
   Loader2,
   Play,
+  RefreshCw,
   Search,
+  Share2,
   SlidersHorizontal,
   Sparkles,
   Tv,
@@ -31,6 +35,7 @@ import {
   getOptimizedAvatarUrl,
   getOptimizedThumbnailUrl,
 } from '../utils/dataSaver.ts';
+import { shareKingdomVideo } from '../utils/shareVideo.ts';
 
 interface ChristianMoviesViewProps {
   categories: ContentCategory[];
@@ -65,6 +70,19 @@ export const CHRISTIAN_MOVIE_GENRES = [
 
 type MovieSortLens = 'high_impression_recent' | 'most_viewed' | 'highest_engagement' | 'newest';
 
+interface MovieTrendingAlert {
+  id: string;
+  badge: 'New Release' | 'Trending Christian Movie';
+  caption: string;
+  searchKeyword: string;
+  studioName: string;
+  publishedAt: string;
+  viewCount: number;
+  viewsPerDay: number;
+  source: 'studio_feed' | 'youtube_trending_search' | 'catalog';
+  video: KingdomVideo;
+}
+
 export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
   categories,
   channels,
@@ -85,10 +103,63 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     isDataSaverActive ? 12 : 24
   );
 
+  // Live YouTube Christian movie release & trending caption alerts
+  const [trendingAlerts, setTrendingAlerts] = useState<MovieTrendingAlert[]>([]);
+  const [alertsCheckedAt, setAlertsCheckedAt] = useState<string | null>(null);
+  const [isCheckingAlerts, setIsCheckingAlerts] = useState(false);
+  const [heroPaused, setHeroPaused] = useState(false);
+  const lastFetchedMsRef = useRef<number>(0);
+  const resultsSectionRef = useRef<HTMLDivElement | null>(null);
+
   // Beyond-library YouTube movie discovery state
   const [discoveredMovies, setDiscoveredMovies] = useState<KingdomVideo[]>([]);
   const [isSearchingDiscovered, setIsSearchingDiscovered] = useState(false);
   const [discoveredSearchLabel, setDiscoveredSearchLabel] = useState<string | null>(null);
+
+  const loadTrendingMovieAlerts = async (forceRefresh = false) => {
+    setIsCheckingAlerts(true);
+    try {
+      const res = await fetch(
+        `/api/movies/trending-alerts${forceRefresh ? '?refresh=1' : ''}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        lastFetchedMsRef.current = Date.now();
+        if (Array.isArray(data.alerts)) {
+          setTrendingAlerts(data.alerts);
+        }
+        if (data.checkedAt) {
+          setAlertsCheckedAt(data.checkedAt);
+        }
+      }
+    } catch {
+      // Keep existing state gracefully
+    } finally {
+      setIsCheckingAlerts(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTrendingMovieAlerts(false);
+
+    // Keep the Movie Page banner updated automatically every 10 minutes
+    const pollTimer = window.setInterval(() => {
+      loadTrendingMovieAlerts(false);
+    }, 10 * 60 * 1000);
+
+    // Also refresh automatically when returning to the tab if > 5 minutes stale
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastFetchedMsRef.current > 5 * 60 * 1000) {
+        loadTrendingMovieAlerts(false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.clearInterval(pollTimer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
 
   const movieCategories = useMemo(
     () =>
@@ -112,13 +183,19 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
   const allMovieVideos = useMemo(() => {
     const movieSlugSet = new Set(MOVIE_CATEGORY_SLUGS);
     const studioIds = new Set(movieStudios.map((s) => s.id));
-    return videos.filter(
+    const baseMovies = videos.filter(
       (v) =>
         movieSlugSet.has(v.primary_category_slug) ||
         v.secondary_category_slugs.some((s) => movieSlugSet.has(s)) ||
         studioIds.has(v.channel_id)
     );
-  }, [videos, movieStudios]);
+    // Merge live YouTube trending/newly released movies so they are immediately searchable in-app
+    const seenYtIds = new Set(baseMovies.map((v) => v.youtube_video_id));
+    const freshAlertVideos = trendingAlerts
+      .map((a) => a.video)
+      .filter((v) => v && v.youtube_video_id && !seenYtIds.has(v.youtube_video_id));
+    return [...freshAlertVideos, ...baseMovies];
+  }, [videos, movieStudios, trendingAlerts]);
 
   // High-impression & recent composite ranker for Christian Movies & Animations
   const sortMoviesByLens = (list: KingdomVideo[], lens: MovieSortLens): KingdomVideo[] => {
@@ -148,11 +225,47 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     );
   };
 
-  const heroMovies = useMemo(() => {
-    return sortMoviesByLens(allMovieVideos, 'high_impression_recent').slice(0, 5);
-  }, [allMovieVideos]);
+  const heroSlides = useMemo(() => {
+    const slides: Array<{ video: KingdomVideo; alert?: MovieTrendingAlert }> = [];
+    const seenYtIds = new Set<string>();
 
-  const currentHero = heroMovies[heroIndex] || heroMovies[0] || null;
+    for (const alert of trendingAlerts) {
+      if (alert?.video && !seenYtIds.has(alert.video.youtube_video_id)) {
+        seenYtIds.add(alert.video.youtube_video_id);
+        slides.push({ video: alert.video, alert });
+      }
+    }
+
+    if (slides.length < 5) {
+      for (const fallbackVideo of sortMoviesByLens(allMovieVideos, 'high_impression_recent')) {
+        if (slides.length >= 5) break;
+        if (!seenYtIds.has(fallbackVideo.youtube_video_id)) {
+          seenYtIds.add(fallbackVideo.youtube_video_id);
+          slides.push({ video: fallbackVideo });
+        }
+      }
+    }
+
+    return slides.slice(0, 6);
+  }, [trendingAlerts, allMovieVideos]);
+
+  useEffect(() => {
+    if (heroIndex >= heroSlides.length && heroSlides.length > 0) {
+      setHeroIndex(0);
+    }
+  }, [heroIndex, heroSlides.length]);
+
+  useEffect(() => {
+    if (heroPaused || heroSlides.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setHeroIndex((prev) => (prev + 1) % heroSlides.length);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [heroPaused, heroSlides.length]);
+
+  const currentSlide = heroSlides[heroIndex] || heroSlides[0] || null;
+  const currentHero = currentSlide?.video || null;
+  const currentHeroAlert = currentSlide?.alert || null;
 
   const filteredMovies = useMemo(() => {
     let list = [...allMovieVideos];
@@ -209,15 +322,18 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     setDiscoveredSearchLabel(genreObj.label);
     try {
       const res = await fetch(
-        `/api/discovery/movies?genre=${encodeURIComponent(genreObj.queryTerm)}&query=${encodeURIComponent(
+        `/api/discovery/movies?genre=${encodeURIComponent(genreObj.id)}&query=${encodeURIComponent(
           searchQuery
         )}`
       );
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        if (Array.isArray(data.movies)) {
-          setDiscoveredMovies(data.movies);
+        const combined = Array.isArray(data.movies)
+          ? data.movies
+          : [...(data.curatedMovies || []), ...(data.discoveredMovies || [])];
+        if (combined.length > 0) {
+          setDiscoveredMovies(combined);
           return;
         }
       }
@@ -229,34 +345,55 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     }
   };
 
-  const handleCustomMovieSearch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+  const runMovieSearchQuery = async (rawTerm: string) => {
+    const trimmed = rawTerm.trim();
+    if (!trimmed) return;
 
     setIsSearchingDiscovered(true);
     const activeGenre = CHRISTIAN_MOVIE_GENRES.find((g) => g.id === selectedGenreId);
-    const genreTerm = activeGenre && activeGenre.id !== 'all' ? activeGenre.queryTerm : '';
-    setDiscoveredSearchLabel(searchQuery.trim());
+    const genreTerm = activeGenre && activeGenre.id !== 'all' ? activeGenre.id : '';
+    setDiscoveredSearchLabel(trimmed);
     try {
       const res = await fetch(
         `/api/discovery/movies?genre=${encodeURIComponent(genreTerm)}&query=${encodeURIComponent(
-          searchQuery.trim()
+          trimmed
         )}`
       );
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        if (Array.isArray(data.movies)) {
-          setDiscoveredMovies(data.movies);
+        const combined = Array.isArray(data.movies)
+          ? data.movies
+          : [...(data.curatedMovies || []), ...(data.discoveredMovies || [])];
+        if (combined.length > 0) {
+          setDiscoveredMovies(combined);
           return;
         }
       }
-      setDiscoveredMovies(filterLocalMovies(genreTerm, searchQuery.trim()));
+      setDiscoveredMovies(filterLocalMovies(genreTerm, trimmed));
     } catch {
-      setDiscoveredMovies(filterLocalMovies(genreTerm, searchQuery.trim()));
+      setDiscoveredMovies(filterLocalMovies(genreTerm, trimmed));
     } finally {
       setIsSearchingDiscovered(false);
     }
+  };
+
+  const handleCustomMovieSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    await runMovieSearchQuery(searchQuery);
+  };
+
+  const handleSearchAnnouncedMovieInApp = async (alert: MovieTrendingAlert) => {
+    setSelectedCategorySlug('all');
+    setSelectedStudioId(null);
+    setSearchQuery(alert.searchKeyword);
+    if (onDiscoveredVideoSelected) {
+      onDiscoveredVideoSelected(alert.video);
+    }
+    window.setTimeout(() => {
+      resultsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+    await runMovieSearchQuery(alert.searchKeyword);
   };
 
   const handleClearDiscovered = () => {
@@ -268,9 +405,13 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
   return (
     <div className="flex flex-col gap-12 pb-16">
       {/* ====================================================================
-          CHRISTIAN MOVIES & BIBLE CINEMA HERO SPOTLIGHT
+          CHRISTIAN MOVIES & BIBLE CINEMA HERO SPOTLIGHT (LIVE TRENDING & NEW RELEASES BANNER)
       ==================================================================== */}
-      <section className="relative w-full min-h-[380px] sm:min-h-[450px] lg:min-h-[500px] border-b border-zinc-800/80 flex items-end overflow-hidden bg-[#09090B]">
+      <section
+        onMouseEnter={() => setHeroPaused(true)}
+        onMouseLeave={() => setHeroPaused(false)}
+        className="relative w-full min-h-[410px] sm:min-h-[470px] lg:min-h-[520px] border-b border-zinc-800/80 flex items-end overflow-hidden bg-[#09090B]"
+      >
         <img
           src={
             currentHero
@@ -289,19 +430,41 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
           }}
           className="absolute inset-0 w-full h-full object-cover object-center opacity-95 sm:opacity-85 transition-opacity duration-500"
         />
-        <div className="hidden lg:block absolute inset-0 bg-gradient-to-r from-[#09090B]/90 via-[#09090B]/55 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/65 via-40% to-transparent" />
+        <div className="hidden lg:block absolute inset-0 bg-gradient-to-r from-[#09090B]/95 via-[#09090B]/65 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#09090B] via-[#09090B]/70 via-45% to-transparent" />
 
-        <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-7 sm:py-12 lg:py-14 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
+        <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-7 sm:py-11 lg:py-12 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
           <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-3">
-            <div className="flex items-center flex-wrap gap-2 text-[11px] sm:text-xs font-medium text-amber-400">
-              <span>Christian Cinema</span>
+            <div className="flex items-center flex-wrap gap-2 text-[11px] sm:text-xs font-medium">
+              {currentHeroAlert ? (
+                <span className="inline-flex items-center gap-1.5 text-amber-400 font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  {currentHeroAlert.badge === 'New Release' ? (
+                    <BellRing className="w-3.5 h-3.5" />
+                  ) : (
+                    <Flame className="w-3.5 h-3.5" />
+                  )}
+                  <span>{currentHeroAlert.badge}</span>
+                </span>
+              ) : (
+                <span className="text-amber-400">Christian Cinema</span>
+              )}
+              <span aria-hidden="true" className="text-zinc-600">·</span>
+              <span className="text-emerald-400 font-medium">Verified Christian Movie</span>
               {currentHero && (
                 <>
                   <span aria-hidden="true" className="text-zinc-600">·</span>
-                  <span className="text-zinc-200">{currentHero.primary_category_name}</span>
-                  <span aria-hidden="true" className="text-zinc-600">·</span>
-                  <span className="text-zinc-300 truncate max-w-[180px] sm:max-w-none">{currentHero.channel_title}</span>
+                  <span className="text-zinc-300 truncate max-w-[180px] sm:max-w-none">
+                    {currentHero.channel_title}
+                  </span>
+                </>
+              )}
+              {alertsCheckedAt && (
+                <>
+                  <span aria-hidden="true" className="hidden sm:inline text-zinc-600">·</span>
+                  <span className="hidden sm:inline text-zinc-400">
+                    Updated {formatRelativeDate(alertsCheckedAt)}
+                  </span>
                 </>
               )}
             </div>
@@ -322,6 +485,14 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                 <span className="font-sans text-zinc-400">
                   {formatRelativeDate(currentHero.published_at)}
                 </span>
+                {currentHero.views_per_day > 0 && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="text-amber-300">
+                      {formatCompactNumber(Math.round(currentHero.views_per_day))}/day momentum
+                    </span>
+                  </>
+                )}
               </div>
             )}
 
@@ -329,12 +500,26 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
               <div className="flex items-center flex-wrap gap-2.5 pt-1">
                 <button
                   type="button"
-                  onClick={() => onSelectVideo(currentHero)}
+                  onClick={() => {
+                    onSelectVideo(currentHero);
+                    if (onDiscoveredVideoSelected) onDiscoveredVideoSelected(currentHero);
+                  }}
                   className="inline-flex items-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 shadow-lg"
                 >
                   <Play className="w-4 h-4 fill-current" />
                   <span>Watch Movie</span>
                 </button>
+
+                {currentHeroAlert && (
+                  <button
+                    type="button"
+                    onClick={() => handleSearchAnnouncedMovieInApp(currentHeroAlert)}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-amber-500/40 text-amber-300 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Search className="w-4 h-4" />
+                    <span>Search &ldquo;{currentHeroAlert.searchKeyword}&rdquo;</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -353,44 +538,130 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                     </>
                   )}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => shareKingdomVideo(currentHero)}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-100 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0"
+                  title="Share this movie via WhatsApp or Messages"
+                >
+                  <Share2 className="w-4 h-4 text-amber-400" />
+                  <span>Share</span>
+                </button>
               </div>
             )}
           </div>
 
-          {/* Right 4 Columns: Top High-Impression Movie Lineup (Swipeable on mobile) */}
-          {heroMovies.length > 1 && (
-            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/70 border border-zinc-800/80 rounded-xl p-2.5 sm:p-3.5">
-              <div className="text-[11px] font-medium text-zinc-400 px-1 pb-0.5">
-                Featured Movies ({heroIndex + 1}/{heroMovies.length})
-              </div>
-              <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar">
-                {heroMovies.map((cand, idx) => (
+          {/* Right 4 Columns: Trending & Newly Released Movies Lineup directly on the Banner */}
+          {heroSlides.length > 0 && (
+            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/75 backdrop-blur-md border border-zinc-800/90 rounded-xl p-2.5 sm:p-3.5">
+              <div className="flex items-center justify-between gap-2 px-1 pb-1">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-200">
+                  <Flame className="w-3.5 h-3.5 text-amber-400" />
+                  <span>
+                    {trendingAlerts.length > 0
+                      ? `Trending & New Releases (${heroIndex + 1}/${heroSlides.length})`
+                      : `Featured Movies (${heroIndex + 1}/${heroSlides.length})`}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  {heroSlides.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHeroPaused(true);
+                          setHeroIndex(
+                            (prev) => (prev - 1 + heroSlides.length) % heroSlides.length
+                          );
+                        }}
+                        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100"
+                        title="Previous trending movie"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHeroPaused(true);
+                          setHeroIndex((prev) => (prev + 1) % heroSlides.length);
+                        }}
+                        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100"
+                        title="Next trending movie"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  )}
                   <button
-                    key={cand.id}
                     type="button"
-                    onClick={() => setHeroIndex(idx)}
-                    className={`min-w-[210px] sm:min-w-[240px] lg:min-w-0 lg:w-full text-left p-2 rounded-lg transition-colors flex items-center gap-2.5 shrink-0 ${
-                      idx === heroIndex
-                        ? 'bg-amber-500/15 border border-amber-500/40'
-                        : 'hover:bg-zinc-900/70 border border-transparent'
-                    }`}
+                    onClick={() => loadTrendingMovieAlerts(true)}
+                    disabled={isCheckingAlerts}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-[10px] font-medium text-amber-300 transition-colors disabled:opacity-60"
+                    title="Refresh newly released & trending Christian movies"
                   >
-                    <img
-                      src={getOptimizedThumbnailUrl(cand, isDataSaverActive, 'mini')}
-                      alt={cand.title}
-                      loading="lazy"
-                      decoding="async"
-                      referrerPolicy="no-referrer"
-                      className="w-14 aspect-video rounded object-cover bg-zinc-900 shrink-0"
+                    <RefreshCw
+                      className={`w-3 h-3 ${isCheckingAlerts ? 'animate-spin text-amber-400' : ''}`}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-zinc-100 truncate">{cand.title}</div>
-                      <div className="text-[11px] text-zinc-400 truncate font-mono tabular-nums">
-                        {formatCompactNumber(cand.view_count)} views
-                      </div>
-                    </div>
+                    <span>Refresh</span>
                   </button>
-                ))}
+                </div>
+              </div>
+
+              <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar max-h-[290px] lg:overflow-y-auto">
+                {heroSlides.map((slide, idx) => {
+                  const cand = slide.video;
+                  const alert = slide.alert;
+                  return (
+                    <button
+                      key={cand.id}
+                      type="button"
+                      onClick={() => {
+                        setHeroPaused(true);
+                        setHeroIndex(idx);
+                      }}
+                      className={`min-w-[220px] sm:min-w-[250px] lg:min-w-0 lg:w-full text-left p-2 rounded-lg transition-colors flex items-center gap-2.5 shrink-0 ${
+                        idx === heroIndex
+                          ? 'bg-amber-500/15 border border-amber-500/45'
+                          : 'hover:bg-zinc-900/75 border border-transparent'
+                      }`}
+                    >
+                      <img
+                        src={getOptimizedThumbnailUrl(cand, isDataSaverActive, 'mini')}
+                        alt={cand.title}
+                        loading="lazy"
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        className="w-16 aspect-video rounded object-cover bg-zinc-900 shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 text-[10px] font-semibold mb-0.5">
+                          {alert ? (
+                            <span
+                              className={
+                                alert.badge === 'New Release'
+                                  ? 'text-emerald-400'
+                                  : 'text-amber-400'
+                              }
+                            >
+                              {alert.badge === 'New Release' ? 'New Release' : 'Trending'}
+                            </span>
+                          ) : (
+                            <span className="text-zinc-400">Featured</span>
+                          )}
+                          <span className="text-zinc-600" aria-hidden="true">·</span>
+                          <span className="text-zinc-400 font-mono tabular-nums">
+                            {formatCompactNumber(cand.view_count)} views
+                          </span>
+                        </div>
+                        <div className="text-xs font-medium text-zinc-100 truncate">
+                          {cand.title}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -401,6 +672,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
           DEDICATED MOVIE CATEGORIES, STUDIOS & IMPRESSION FILTER BAR
       ==================================================================== */}
       <div className="max-w-[1440px] w-full mx-auto px-4 sm:px-8 flex flex-col gap-10">
+
         {/* Category Cards Strip (The 4 Dedicated Christian Movie Categories - Swipeable on Mobile, Grid on Desktop) */}
         <section className="flex sm:grid sm:grid-cols-2 lg:grid-cols-4 overflow-x-auto no-scrollbar gap-3 sm:gap-4 pb-1 sm:pb-0 snap-x snap-mandatory">
           {movieCategories.map((cat) => {
@@ -663,6 +935,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
         </section>
 
         {/* Filtered View vs Full Dedicated Movie Category Rails */}
+        <div ref={resultsSectionRef} />
         {selectedCategorySlug !== 'all' || selectedStudioId !== null || searchQuery.trim() !== '' ? (
           <section className="flex flex-col gap-5">
             <div className="flex items-center justify-between">

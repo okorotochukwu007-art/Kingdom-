@@ -201,11 +201,53 @@ create table if not exists public.direct_messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references public.conversations(id) on delete cascade,
   sender_id uuid not null references public.profiles(id) on delete cascade,
-  content text not null,
+  content text not null default '',
+  attachment jsonb,
   is_read boolean not null default false,
   read_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.direct_messages
+  add column if not exists attachment jsonb;
+
+-- 8b. COMMUNITY GROUP ROOM MESSAGES & UNIFIED COMMUNITY MESSAGES LOG
+create table if not exists public.fellowship_room_messages (
+  id uuid primary key default gen_random_uuid(),
+  room_id text not null,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  user_full_name text not null,
+  user_username text not null,
+  user_location text default 'Nigeria',
+  content text not null default '',
+  attachment jsonb,
+  amen_user_ids uuid[] not null default '{}',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_fellowship_room_messages_room_created
+  on public.fellowship_room_messages(room_id, created_at desc);
+
+create table if not exists public.community_messages (
+  id uuid primary key default gen_random_uuid(),
+  message_scope text not null check (message_scope in ('room', 'direct')),
+  room_id text,
+  conversation_id uuid references public.conversations(id) on delete cascade,
+  sender_id uuid not null references public.profiles(id) on delete cascade,
+  sender_full_name text not null default '',
+  sender_username text not null default '',
+  sender_location text default '',
+  recipient_id uuid references public.profiles(id) on delete set null,
+  content text not null default '',
+  attachment jsonb,
+  amen_user_ids uuid[] not null default '{}',
+  is_read boolean not null default false,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_community_messages_scope_created
+  on public.community_messages(message_scope, created_at desc);
 
 -- 9. PRAYER COMMUNITY WALL
 create table if not exists public.prayer_requests (
@@ -432,13 +474,27 @@ begin
   ) then
     alter publication supabase_realtime add table public.discovered_videos;
   end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'fellowship_room_messages'
+  ) then
+    alter publication supabase_realtime add table public.fellowship_room_messages;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'community_messages'
+  ) then
+    alter publication supabase_realtime add table public.community_messages;
+  end if;
 end $$;
 
 -- ============================================================================
 -- 15. ROW LEVEL SECURITY (RLS) POLICIES FOR CLOUDFLARE PAGES & STATIC CLIENTS
 -- ============================================================================
 
--- Enable RLS on all 17 tables
+-- Enable RLS on all 19 tables
 alter table public.profiles enable row level security;
 alter table public.categories enable row level security;
 alter table public.channels enable row level security;
@@ -450,6 +506,8 @@ alter table public.user_follows enable row level security;
 alter table public.user_blocks enable row level security;
 alter table public.conversations enable row level security;
 alter table public.direct_messages enable row level security;
+alter table public.fellowship_room_messages enable row level security;
+alter table public.community_messages enable row level security;
 alter table public.prayer_requests enable row level security;
 alter table public.prayer_encouragements enable row level security;
 alter table public.moderation_reports enable row level security;
@@ -502,6 +560,16 @@ create policy "Conversations manage" on public.conversations for all using (true
 
 drop policy if exists "Direct messages manage" on public.direct_messages;
 create policy "Direct messages manage" on public.direct_messages for all using (true) with check (true);
+
+drop policy if exists "Fellowship room messages read" on public.fellowship_room_messages;
+create policy "Fellowship room messages read" on public.fellowship_room_messages for select using (true);
+drop policy if exists "Fellowship room messages manage" on public.fellowship_room_messages;
+create policy "Fellowship room messages manage" on public.fellowship_room_messages for all using (true) with check (true);
+
+drop policy if exists "Community messages read" on public.community_messages;
+create policy "Community messages read" on public.community_messages for select using (true);
+drop policy if exists "Community messages manage" on public.community_messages;
+create policy "Community messages manage" on public.community_messages for all using (true) with check (true);
 
 drop policy if exists "Prayer requests read" on public.prayer_requests;
 create policy "Prayer requests read" on public.prayer_requests for select using (true);

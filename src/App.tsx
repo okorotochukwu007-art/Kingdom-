@@ -12,6 +12,7 @@ import {
   Radio,
   RefreshCw,
   Search,
+  Share2,
   Shield,
   SlidersHorizontal,
   Users,
@@ -21,6 +22,7 @@ import { AuthAndProfileModal } from './components/AuthAndProfileModal.tsx';
 import { ChristianLivingSanctuaryView } from './components/ChristianLivingSanctuaryView.tsx';
 import { ChristianMoviesView } from './components/ChristianMoviesView.tsx';
 import { CommunityAndMessagingView } from './components/CommunityAndMessagingView.tsx';
+import { DailyAltarCard } from './components/DailyAltarCard.tsx';
 import {
   buildConsolidatedMinisterProfiles,
   ExploreMinistersView,
@@ -29,12 +31,12 @@ import {
 } from './components/MinisterSearchAndDirectory.tsx';
 import { LiveSpecialBroadcastsView } from './components/LiveSpecialBroadcastsView.tsx';
 import { GlobalChristianSearchSection } from './components/GlobalChristianSearchSection.tsx';
-import { PrayerCommunityView } from './components/PrayerCommunityView.tsx';
 import { VideoCard } from './components/VideoCard.tsx';
 import { WorshipPraiseSanctuaryView } from './components/WorshipPraiseSanctuaryView.tsx';
 import { YouTubePlayerModal } from './components/YouTubePlayerModal.tsx';
 import { PWAInstallButton } from './components/PWAInstallButton.tsx';
 import { getActiveUserSession, logoutUser } from './utils/authService.ts';
+import { APP_TOAST_EVENT, shareKingdomVideo } from './utils/shareVideo.ts';
 import {
   DiscoveryFilterScope,
   IntelligentDiscoveryModal,
@@ -73,7 +75,6 @@ type NavView =
   | 'categories'
   | 'ministers'
   | 'community'
-  | 'prayer'
   | 'admin';
 
 type RankingMode =
@@ -142,6 +143,9 @@ export default function App() {
   const [activeVideo, setActiveVideo] = useState<KingdomVideo | null>(null);
   const [isPlayerMinimized, setIsPlayerMinimized] = useState(false);
   const [activeLiveStreams, setActiveLiveStreams] = useState<KingdomVideo[]>([]);
+  const pendingDeepLinkIdRef = React.useRef<string | null>(
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('v') : null
+  );
 
   // Auth & Profile Modal
   const [authToken, setAuthToken] = useState<string | null>(() =>
@@ -332,6 +336,130 @@ export default function App() {
     setActiveVideo(vid);
   };
 
+  useEffect(() => {
+    const handleAppToast = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (!detail) return;
+      setDataSaverToast(detail);
+      if (dataSaverToastTimerRef.current) {
+        window.clearTimeout(dataSaverToastTimerRef.current);
+      }
+      dataSaverToastTimerRef.current = window.setTimeout(() => {
+        setDataSaverToast(null);
+      }, 2800);
+    };
+    window.addEventListener(APP_TOAST_EVENT, handleAppToast);
+    return () => window.removeEventListener(APP_TOAST_EVENT, handleAppToast);
+  }, []);
+
+  useEffect(() => {
+    const target = pendingDeepLinkIdRef.current;
+    if (!target) return;
+    if (videos.length === 0 && activeLiveStreams.length === 0) return;
+
+    const pool = [...activeLiveStreams, ...videos];
+    const matched = pool.find(
+      (v) => v.youtube_video_id === target || v.id === target
+    );
+    if (!matched) return;
+
+    pendingDeepLinkIdRef.current = null;
+    try {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete('v');
+      window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+    } catch {
+      // Ignore URL cleanup error
+    }
+    handleRequestPlayVideo(matched);
+  }, [videos, activeLiveStreams, currentUser]);
+
+  // Real-time online presence heartbeat across tabs and devices
+  useEffect(() => {
+    if (!currentUser?.id || !authToken) return;
+
+    const sendHeartbeat = async () => {
+      if (document.hidden) return;
+      const nowIso = new Date().toISOString();
+      let serverUpdated = false;
+      try {
+        const res = await fetch('/api/community/heartbeat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+            'X-Kingdom-User-Id': currentUser.id,
+            'X-Kingdom-User-Email': currentUser.email,
+          },
+          body: JSON.stringify({ active: true }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          serverUpdated = true;
+        }
+      } catch {
+        // Static / offline fallback handled below
+      }
+
+      if (!serverUpdated) {
+        try {
+          const url =
+            (window as any).__KINGDOM_SUPABASE_URL__ ||
+            (import.meta as any).env?.VITE_SUPABASE_URL ||
+            'https://hswbafspnhgojjuyhnqa.supabase.co';
+          const key =
+            (window as any).__KINGDOM_SUPABASE_KEY__ ||
+            (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
+            'sb_publishable_mscwd1aUENWUlwyCkm9aFg_CNXyRyfG';
+          const sb = getBrowserSupabaseClient(url, key);
+          if (sb) {
+            await sb
+              .from('profiles')
+              .update({ is_online: true, last_seen_at: nowIso })
+              .eq('id', currentUser.id);
+          }
+        } catch {
+          // Ignore transient Supabase error
+        }
+      }
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (!document.hidden) {
+        sendHeartbeat();
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      try {
+        if (typeof navigator.sendBeacon === 'function') {
+          const blob = new Blob(
+            [JSON.stringify({ userId: currentUser.id, email: currentUser.email })],
+            { type: 'application/json' }
+          );
+          navigator.sendBeacon('/api/community/offline', blob);
+        }
+      } catch {
+        // Ignore unload beacon error
+      }
+    };
+
+    sendHeartbeat();
+    const timer = window.setInterval(sendHeartbeat, 25000);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+    };
+  }, [currentUser?.id, currentUser?.email, authToken]);
+
   const handleAuthSuccess = (token: string, user: UserProfile) => {
     localStorage.setItem('kingdom_plus_token', token);
     setAuthToken(token);
@@ -377,6 +505,8 @@ export default function App() {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
+          'X-Kingdom-User-Id': currentUser.id,
+          'X-Kingdom-User-Email': currentUser.email,
         },
         body: JSON.stringify({ videoId }),
       });
@@ -419,6 +549,8 @@ export default function App() {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken}`,
+        'X-Kingdom-User-Id': currentUser.id,
+        'X-Kingdom-User-Email': currentUser.email,
       },
       body: JSON.stringify({ videoId, progressSeconds, durationSeconds }),
     }).catch(() => {});
@@ -845,7 +977,7 @@ export default function App() {
                 switchView('community');
               }}
               className={`hover:text-zinc-100 transition-colors whitespace-nowrap shrink-0 ${
-                activeView === 'community' || activeView === 'prayer'
+                activeView === 'community'
                   ? 'text-zinc-50 underline underline-offset-8 decoration-amber-400 decoration-2'
                   : ''
               }`}
@@ -906,7 +1038,12 @@ export default function App() {
 
       {dataSaverToast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-xl bg-zinc-900 border border-emerald-500/40 text-emerald-300 text-xs font-medium shadow-2xl flex items-center gap-2 max-w-[92vw] whitespace-nowrap">
-          <Gauge className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          {dataSaverToast.toLowerCase().includes('data') ||
+          dataSaverToast.toLowerCase().includes('quality') ? (
+            <Gauge className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          ) : (
+            <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          )}
           <span className="truncate">{dataSaverToast}</span>
         </div>
       )}
@@ -1009,7 +1146,7 @@ export default function App() {
                   )}
 
                   {currentHero && (
-                    <div className="flex items-center gap-2.5 pt-1">
+                    <div className="flex items-center flex-wrap gap-2.5 pt-1">
                       <button
                         type="button"
                         onClick={() => handleRequestPlayVideo(currentHero)}
@@ -1035,6 +1172,16 @@ export default function App() {
                             <span>Watchlist</span>
                           </>
                         )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => shareKingdomVideo(currentHero)}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl bg-black/75 hover:bg-zinc-900 border border-white/15 text-zinc-100 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0"
+                        title="Share on WhatsApp, Telegram, or Messages"
+                      >
+                        <Share2 className="w-4 h-4 text-amber-400" />
+                        <span>Share</span>
                       </button>
                     </div>
                   )}
@@ -1082,6 +1229,9 @@ export default function App() {
                 (All other videos live strictly inside their fitting Categories)
             ================================================================ */}
             <section className="max-w-[1440px] w-full mx-auto px-4 sm:px-8 flex flex-col gap-6 sm:gap-8">
+              {/* 0. DAILY ALTAR STREAK & VERSE OF THE DAY */}
+              <DailyAltarCard userId={currentUser?.id} />
+
               {/* 1. LIVE SERVICE COUNTDOWN, DAILY PRAYER SCHEDULE & LIVE BROADCASTS */}
               <LiveSpecialBroadcastsView
                 videos={streamingVideos}
@@ -1640,18 +1790,9 @@ export default function App() {
             />
           ))}
 
-        {/* 4. COMMUNITY & REAL-TIME PRIVATE MESSAGING VIEW */}
+        {/* 4 & 5. UNIFIED COMMUNITY HUB (FELLOWSHIP ROOMS, PRIVATE CHAT & MEMBERS) */}
         {activeView === 'community' && (
           <CommunityAndMessagingView
-            currentUser={currentUser}
-            authToken={authToken}
-            onRequireAuth={() => setShowAuthModal(true)}
-          />
-        )}
-
-        {/* 5. PRAYER ALTAR & COMMUNITY WALL VIEW */}
-        {activeView === 'prayer' && (
-          <PrayerCommunityView
             currentUser={currentUser}
             authToken={authToken}
             onRequireAuth={() => setShowAuthModal(true)}
@@ -1719,13 +1860,6 @@ export default function App() {
             >
               Community
             </button>
-            <button
-              type="button"
-              onClick={() => setActiveView('prayer')}
-              className="hover:text-zinc-300 transition-colors"
-            >
-              Prayer Wall
-            </button>
           </div>
         </div>
       </footer>
@@ -1746,9 +1880,7 @@ export default function App() {
             { id: 'community', label: 'Community', icon: MessageSquare },
           ].map((tab) => {
             const Icon = tab.icon;
-            const isActive =
-              activeView === tab.id ||
-              (tab.id === 'community' && activeView === 'prayer');
+            const isActive = activeView === tab.id;
             return (
               <button
                 key={tab.id}

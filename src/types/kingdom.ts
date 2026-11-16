@@ -255,6 +255,7 @@ export interface DirectMessage {
   conversation_id: string;
   sender_id: string;
   content: string;
+  attachment?: EventAttachment;
   is_read: boolean;
   read_at?: string;
   created_at: string;
@@ -268,6 +269,17 @@ export interface PrayerEncouragement {
   user_username: string;
   content: string;
   created_at: string;
+}
+
+export interface EventAttachment {
+  type: 'event' | 'flyer';
+  event_title?: string;
+  event_date?: string;
+  event_location?: string;
+  event_link?: string;
+  file_name?: string;
+  file_mime?: string;
+  file_data_url?: string;
 }
 
 export interface PrayerRequest {
@@ -284,7 +296,63 @@ export interface PrayerRequest {
   prayed_by_user_ids: string[];
   encouragement_count: number;
   encouragements: PrayerEncouragement[];
+  attachment?: EventAttachment;
   status: 'active' | 'answered' | 'hidden';
+  created_at: string;
+}
+
+export type FellowshipPostCategory =
+  | 'testimony'
+  | 'praise_report'
+  | 'sermon_note'
+  | 'event'
+  | 'fellowship';
+
+export interface FellowshipPostReply {
+  id: string;
+  post_id: string;
+  user_id: string;
+  user_full_name: string;
+  user_username: string;
+  user_location: string;
+  content: string;
+  created_at: string;
+}
+
+export interface FellowshipPost {
+  id: string;
+  user_id: string;
+  user_full_name: string;
+  user_username: string;
+  user_location: string;
+  user_church: string;
+  category: FellowshipPostCategory;
+  title: string;
+  content: string;
+  attachment?: EventAttachment;
+  amen_user_ids: string[];
+  praise_user_ids: string[];
+  replies: FellowshipPostReply[];
+  created_at: string;
+}
+
+export type FellowshipRoomId =
+  | 'morning-altar'
+  | 'singles-marriage'
+  | 'worshippers-choir'
+  | 'bible-study-purpose'
+  | 'intercessors';
+
+export interface FellowshipRoomMessage {
+  id: string;
+  room_id: FellowshipRoomId;
+  user_id: string;
+  user_full_name: string;
+  user_username: string;
+  user_location: string;
+  content: string;
+  attachment?: EventAttachment;
+  amen_user_ids: string[];
   created_at: string;
 }
 

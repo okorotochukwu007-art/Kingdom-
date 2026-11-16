@@ -821,12 +821,30 @@ export async function searchChristianMoviesBeyondLibrary(
   maxResults = 16
 ): Promise<{
   genre: string;
+  movies: KingdomVideo[];
   curatedMovies: KingdomVideo[];
   discoveredMovies: KingdomVideo[];
 }> {
-  const genreConfig = CHRISTIAN_MOVIE_GENRES.find((g) => g.id === genre) || CHRISTIAN_MOVIE_GENRES[0];
-  const searchQuery = query.trim()
-    ? `${query} ${genreConfig.querySuffix}`.trim()
+  const rawGenre = (genre || '').toLowerCase().trim();
+  const genreConfig =
+    CHRISTIAN_MOVIE_GENRES.find((g) => g.id === rawGenre) ||
+    CHRISTIAN_MOVIE_GENRES.find((g) => g.label.toLowerCase() === rawGenre) ||
+    CHRISTIAN_MOVIE_GENRES.find(
+      (g) =>
+        g.id !== 'all' &&
+        (rawGenre.includes(g.id.replace(/-christian-movies$/, '')) ||
+          g.label.toLowerCase().includes(rawGenre) ||
+          rawGenre.includes(g.label.toLowerCase().split(' ')[0]))
+    ) ||
+    CHRISTIAN_MOVIE_GENRES[0];
+
+  const cleanQuery = query.trim();
+  const searchQuery = cleanQuery
+    ? /\b(christian|gospel|bible|biblical|faith|mount zion|jesus|christ|winlos|bamiloye)\b/i.test(
+        cleanQuery
+      )
+      ? `${cleanQuery} ${genreConfig.id !== 'all' ? genreConfig.querySuffix : 'Christian movie'}`.trim()
+      : `${cleanQuery} Christian movie full faith drama`
     : genreConfig.querySuffix;
 
   // 1. Search local curated movies
@@ -837,27 +855,67 @@ export async function searchChristianMoviesBeyondLibrary(
     'bible-story-cartoons',
   ]);
 
-  const qLower = query.toLowerCase().trim();
+  const qLower = cleanQuery.toLowerCase();
+  const genreTokens =
+    genreConfig.id === 'all'
+      ? []
+      : genreConfig.label
+          .toLowerCase()
+          .split(/[\s,&]+/)
+          .filter((t) => t.length > 3 && t !== 'christian' && t !== 'movies' && t !== 'movie');
+
   const curatedMovies = store.state.videos.filter((v) => {
+    if (v.approval_status !== 'approved' || !v.is_available || !v.is_embeddable) return false;
     const isMovie =
       MOVIE_SLUGS.has(v.primary_category_slug) ||
       v.secondary_category_slugs.some((s) => MOVIE_SLUGS.has(s)) ||
       v.channel_type === 'movie_studio' ||
       v.channel_type === 'animation_studio';
     if (!isMovie) return false;
-    if (!qLower) return true;
-    return (
-      v.title.toLowerCase().includes(qLower) ||
-      v.description.toLowerCase().includes(qLower) ||
-      v.channel_title.toLowerCase().includes(qLower)
-    );
+
+    const hay = `${v.title} ${v.description} ${v.channel_title} ${v.primary_category_name} ${
+      v.subcategory_label || ''
+    }`.toLowerCase();
+
+    if (qLower && !hay.includes(qLower)) {
+      const qWords = qLower.split(/\s+/).filter((w) => w.length > 2);
+      if (qWords.length === 0 || !qWords.every((w) => hay.includes(w))) {
+        return false;
+      }
+    }
+
+    if (genreTokens.length > 0 && !qLower) {
+      if (genreConfig.id === 'nigerian-christian-movies') {
+        return v.is_nigerian_channel || /nigerian|mount zion|bamiloye|winlos|jaymikee|evom/i.test(hay);
+      }
+      return genreTokens.some((t) => hay.includes(t));
+    }
+
+    return true;
   });
 
-  // 2. Discover from YouTube Data API
-  const discoveredRaw = await searchYouTubeViaDataApi(searchQuery, maxResults);
+  // 2. Discover from YouTube Data API / structured search (with strict Christian movie guardrails)
+  const discoveredRaw = isSecularQuery(cleanQuery)
+    ? []
+    : await searchYouTubeViaDataApi(searchQuery, maxResults);
+
+  const CHRISTIAN_POSITIVE =
+    /\b(christian|gospel|faith|bible|biblical|jesus|christ|mount zion|bamiloye|evom|jaymikee|winlos|angel studios|the chosen|superbook|vision video|salvation|redemption|deliverance|prayer|holy spirit|pastor|church drama)\b/i;
+
   const curatedYtIds = new Set(curatedMovies.map((m) => m.youtube_video_id));
   const discoveredMovies = discoveredRaw
-    .filter((v) => !curatedYtIds.has(v.youtube_video_id))
+    .filter((v) => {
+      if (curatedYtIds.has(v.youtube_video_id)) return false;
+      const hay = `${v.title} ${v.description} ${v.channel_title}`;
+      if (isSecularQuery(hay)) return false;
+      if (/\b(#shorts|trailer only|official trailer|teaser|reaction|review)\b/i.test(v.title)) {
+        return false;
+      }
+      if (typeof v.duration_seconds === 'number' && v.duration_seconds > 0 && v.duration_seconds < 180) {
+        return false;
+      }
+      return CHRISTIAN_POSITIVE.test(hay);
+    })
     .map((v) => ({
       ...v,
       primary_category_slug: 'real-christian-movies',
@@ -865,8 +923,11 @@ export async function searchChristianMoviesBeyondLibrary(
       subcategory_label: genreConfig.label,
     }));
 
+  const movies = [...curatedMovies, ...discoveredMovies];
+
   return {
     genre: genreConfig.label,
+    movies,
     curatedMovies,
     discoveredMovies,
   };

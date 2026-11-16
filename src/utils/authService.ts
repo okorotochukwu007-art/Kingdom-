@@ -472,26 +472,36 @@ export async function getActiveUserSession(): Promise<{
 export async function logoutUser(authToken: string | null): Promise<void> {
   const rawUser = localStorage.getItem(USER_KEY);
   const sb = getSupabaseInstance();
+  let parsedUser: UserProfile | null = null;
 
-  if (rawUser && sb) {
+  if (rawUser) {
     try {
-      const user = JSON.parse(rawUser);
-      if (user?.id) {
-        await sb
-          .from('profiles')
-          .update({ is_online: false, last_seen_at: new Date().toISOString() })
-          .eq('id', user.id);
-      }
+      parsedUser = JSON.parse(rawUser) as UserProfile;
+    } catch {
+      parsedUser = null;
+    }
+  }
+
+  if (parsedUser?.id && sb) {
+    try {
+      await sb
+        .from('profiles')
+        .update({ is_online: false, last_seen_at: new Date().toISOString() })
+        .eq('id', parsedUser.id);
     } catch {
       // Ignore
     }
   }
 
-  if (authToken) {
+  if (authToken || parsedUser?.id) {
     try {
+      const headers: Record<string, string> = {};
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      if (parsedUser?.id) headers['X-Kingdom-User-Id'] = parsedUser.id;
+      if (parsedUser?.email) headers['X-Kingdom-User-Email'] = parsedUser.email;
       await fetch('/api/auth/logout', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
+        headers,
       });
     } catch {
       // Ignore

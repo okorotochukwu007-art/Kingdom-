@@ -69,6 +69,15 @@ const SECULAR_BLOCKLIST_TERMS = [
   'astrology',
   'tarot reading',
   'zodiac sign',
+  'channels tv',
+  'channels television',
+  'arise news',
+  'tvc news',
+  'ait live',
+  'nta news',
+  'bbc news',
+  'al jazeera',
+  'cnn',
 ];
 
 const CHRISTIAN_CONTEXT_KEYWORDS = [

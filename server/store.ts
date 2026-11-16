@@ -7,6 +7,8 @@ import {
   Conversation,
   DirectMessage,
   DiscoveryHistoryEntry,
+  FellowshipPost,
+  FellowshipRoomMessage,
   KingdomChannel,
   KingdomVideo,
   MarriageCollectionConfig,
@@ -61,6 +63,8 @@ interface KingdomDataStore {
   conversations: Conversation[];
   directMessages: DirectMessage[];
   prayerRequests: PrayerRequest[];
+  fellowshipPosts: FellowshipPost[];
+  fellowshipRoomMessages: FellowshipRoomMessage[];
   moderationReports: ModerationReport[];
   youtubeApiLogs: YouTubeApiLog[];
   discoveryHistory: DiscoveryHistoryEntry[];
@@ -111,6 +115,12 @@ class KingdomRepository {
         if (parsed && Array.isArray(parsed.categories) && Array.isArray(parsed.channels)) {
           if (!Array.isArray(parsed.discoveryHistory)) {
             parsed.discoveryHistory = [];
+          }
+          if (!Array.isArray(parsed.fellowshipPosts)) {
+            parsed.fellowshipPosts = [];
+          }
+          if (!Array.isArray(parsed.fellowshipRoomMessages)) {
+            parsed.fellowshipRoomMessages = [];
           }
           if (!Array.isArray(parsed.marriageCollections) || parsed.marriageCollections.length === 0) {
             parsed.marriageCollections = DEFAULT_MARRIAGE_COLLECTIONS.map((c) => ({ ...c }));
@@ -215,6 +225,8 @@ class KingdomRepository {
       conversations: [],
       directMessages: [],
       prayerRequests: [],
+      fellowshipPosts: [],
+      fellowshipRoomMessages: [],
       moderationReports: [],
       youtubeApiLogs: [],
       discoveryHistory: [],

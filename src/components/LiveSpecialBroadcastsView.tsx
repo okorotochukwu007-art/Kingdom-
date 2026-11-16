@@ -334,6 +334,9 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
   const [searchQuery, setSearchQuery] = useState('');
   const [liveStreamsRaw, setLiveStreamsRaw] = useState<RealTimeLiveStreamItem[]>([]);
   const [loadingLive, setLoadingLive] = useState<boolean>(true);
+  const [remoteSearchedLiveRaw, setRemoteSearchedLiveRaw] = useState<RealTimeLiveStreamItem[]>([]);
+  const [searchingRemoteLive, setSearchingRemoteLive] = useState<boolean>(false);
+  const [remoteSearchLabel, setRemoteSearchLabel] = useState<string>('');
   const [lastCheckedAt, setLastCheckedAt] = useState<string>('');
   const [subscription, setSubscription] = useState<BroadcastReminderSubscription>(() =>
     loadLocalReminderSubscription()
@@ -370,6 +373,7 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
   } | null>(null);
 
   const firedAlertKeysRef = useRef<Set<string>>(new Set());
+  const activeSearchTokenRef = useRef<number>(0);
   const reminderIds = subscription.programIds;
 
   useEffect(() => {
@@ -400,6 +404,37 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     }
   };
 
+  const searchGlobalActiveLiveStreams = async (rawTerm: string) => {
+    const trimmed = rawTerm.trim();
+    if (trimmed.length < 2) {
+      setRemoteSearchedLiveRaw([]);
+      setRemoteSearchLabel('');
+      setSearchingRemoteLive(false);
+      return;
+    }
+
+    const token = ++activeSearchTokenRef.current;
+    setSearchingRemoteLive(true);
+    try {
+      const res = await fetch(`/api/live-check?q=${encodeURIComponent(trimmed)}`);
+      const contentType = res.headers.get('content-type') || '';
+      if (token !== activeSearchTokenRef.current) return;
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data?.liveStreams)) {
+          setRemoteSearchedLiveRaw(data.liveStreams);
+          setRemoteSearchLabel(trimmed);
+        }
+      }
+    } catch {
+      // Ignore transient network errors
+    } finally {
+      if (token === activeSearchTokenRef.current) {
+        setSearchingRemoteLive(false);
+      }
+    }
+  };
+
   const { isDataSaverActive } = useDataSaver();
 
   useEffect(() => {
@@ -413,9 +448,44 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     return () => window.clearInterval(pollTimer);
   }, [isDataSaverActive]);
 
-  // Convert real-time live streams into playable KingdomVideo objects
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (trimmed.length < 2) {
+      activeSearchTokenRef.current++;
+      setRemoteSearchedLiveRaw([]);
+      setRemoteSearchLabel('');
+      setSearchingRemoteLive(false);
+      return;
+    }
+
+    const debounce = window.setTimeout(() => {
+      searchGlobalActiveLiveStreams(trimmed);
+    }, 450);
+    return () => window.clearTimeout(debounce);
+  }, [searchQuery]);
+
+  // Convert real-time live streams into playable KingdomVideo objects (with secular news/TV safety check)
   const activeRealTimeLiveVideos = useMemo(() => {
-    return liveStreamsRaw.map((item) => convertLiveStreamToKingdomVideo(item, channels));
+    const blockedTerms = [
+      'channels tv',
+      'channels television',
+      'channelstv',
+      'arise news',
+      'arise tv',
+      'tvc news',
+      'ait live',
+      'nta news',
+      'bbc news',
+      'cnn',
+      'al jazeera',
+      'sky news',
+    ];
+    return liveStreamsRaw
+      .filter((item) => {
+        const text = `${item.channelTitle} ${item.title}`.toLowerCase();
+        return !blockedTerms.some((term) => text.includes(term));
+      })
+      .map((item) => convertLiveStreamToKingdomVideo(item, channels));
   }, [liveStreamsRaw, channels]);
 
   useEffect(() => {
@@ -623,16 +693,25 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     return programsWithTiming.filter((p) => p.category === scheduleTab);
   }, [programsWithTiming, scheduleTab]);
 
-  // Filter active real-time live streams by search query
+  // Filter active real-time live streams and merge any globally discovered active live Christian streams
   const filteredActiveLiveVideos = useMemo(() => {
-    if (!searchQuery.trim()) return activeRealTimeLiveVideos;
-    const q = searchQuery.toLowerCase();
-    return activeRealTimeLiveVideos.filter(
+    const trimmed = searchQuery.trim();
+    if (!trimmed) return activeRealTimeLiveVideos;
+
+    const q = trimmed.toLowerCase();
+    const localMatches = activeRealTimeLiveVideos.filter(
       (v) =>
         v.title.toLowerCase().includes(q) ||
         v.channel_title.toLowerCase().includes(q)
     );
-  }, [activeRealTimeLiveVideos, searchQuery]);
+
+    const seenYtIds = new Set(localMatches.map((v) => v.youtube_video_id));
+    const remoteMatches = remoteSearchedLiveRaw
+      .filter((item) => !seenYtIds.has(item.videoId))
+      .map((item) => convertLiveStreamToKingdomVideo(item, channels));
+
+    return [...localMatches, ...remoteMatches];
+  }, [activeRealTimeLiveVideos, remoteSearchedLiveRaw, searchQuery, channels]);
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
@@ -704,51 +783,95 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
             </h2>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1 sm:w-64">
-              <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              searchGlobalActiveLiveStreams(searchQuery);
+            }}
+            className="flex items-center gap-2"
+          >
+            <div className="relative flex-1 sm:w-72">
+              <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter active live streams..."
-                className="w-full pl-9 pr-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500"
+                placeholder="Search any active Christian live stream..."
+                className="w-full pl-9 pr-8 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500"
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             <button
               type="button"
-              onClick={fetchRealTimeLiveStreams}
+              onClick={() => {
+                if (searchQuery.trim().length >= 2) {
+                  searchGlobalActiveLiveStreams(searchQuery);
+                } else {
+                  fetchRealTimeLiveStreams();
+                }
+              }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 transition-colors shrink-0"
-              title="Refresh real-time active live broadcasts"
+              title="Refresh or search real-time active live broadcasts"
             >
-              <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${loadingLive ? 'animate-spin' : ''}`} />
-              <span>Refresh Live</span>
+              <RefreshCw
+                className={`w-3.5 h-3.5 text-amber-400 ${
+                  loadingLive || searchingRemoteLive ? 'animate-spin' : ''
+                }`}
+              />
+              <span>{searchQuery.trim().length >= 2 ? 'Search Live' : 'Refresh Live'}</span>
             </button>
-          </div>
+          </form>
         </div>
 
-        {loadingLive && activeRealTimeLiveVideos.length === 0 ? (
+        {(loadingLive && activeRealTimeLiveVideos.length === 0) ||
+        (searchingRemoteLive && filteredActiveLiveVideos.length === 0) ? (
           <div className="p-8 rounded-2xl bg-[#121215] border border-zinc-800 flex items-center justify-center gap-3 text-xs sm:text-sm text-zinc-300">
             <RefreshCw className="w-4 h-4 text-red-400 animate-spin" />
-            <span>Scanning ministry channels in real time for active Christian live broadcasts...</span>
+            <span>
+              {searchingRemoteLive && searchQuery.trim()
+                ? `Searching active Christian live broadcasts for "${searchQuery.trim()}"...`
+                : 'Scanning ministry channels in real time for active Christian live broadcasts...'}
+            </span>
           </div>
         ) : filteredActiveLiveVideos.length === 0 ? (
           <div className="p-8 rounded-2xl bg-[#121215] border border-zinc-800 text-center text-xs sm:text-sm text-zinc-400">
-            No active real-time live streams matched your search right now. Check the upcoming WAT countdown schedule below.
+            {searchQuery.trim()
+              ? `No active Christian live streams matched "${searchQuery.trim()}" right now. Try another ministry name or check the upcoming WAT schedule below.`
+              : 'No active real-time live streams matched your search right now. Check the upcoming WAT countdown schedule below.'}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-            {filteredActiveLiveVideos.map((video) => (
-              <VideoCard
-                key={video.id}
-                video={video}
-                onSelect={onSelectVideo}
-                isSaved={savedVideoIds.includes(video.id)}
-                onToggleSave={onToggleSave}
-                onSelectChannel={onSelectChannel}
-              />
-            ))}
+          <div className="flex flex-col gap-3">
+            {remoteSearchLabel && remoteSearchedLiveRaw.length > 0 && searchQuery.trim() && (
+              <div className="text-xs text-zinc-400 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                <span>
+                  Showing live Christian broadcasts currently on air for{' '}
+                  <strong className="text-zinc-200">&ldquo;{remoteSearchLabel}&rdquo;</strong> — play right here inside KINGDOM+.
+                </span>
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+              {filteredActiveLiveVideos.map((video) => (
+                <VideoCard
+                  key={video.id}
+                  video={video}
+                  onSelect={onSelectVideo}
+                  isSaved={savedVideoIds.includes(video.id)}
+                  onToggleSave={onToggleSave}
+                  onSelectChannel={onSelectChannel}
+                />
+              ))}
+            </div>
           </div>
         )}
       </section>
