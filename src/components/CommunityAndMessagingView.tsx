@@ -167,6 +167,44 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   const dmEndRef = useRef<HTMLDivElement>(null);
 
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
+
+  // Latest-state refs so persistent WebSocket & Realtime callbacks never read stale closures
+  const currentUserRef = useRef(currentUser);
+  const authTokenRef = useRef(authToken);
+  const selectedRecipientRef = useRef(selectedRecipient);
+  const selectedRoomIdRef = useRef(selectedRoomId);
+  const activeSubTabRef = useRef(activeSubTab);
+  const membersRef = useRef(members);
+  const conversationsRef = useRef(conversations);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const processedDmIdsRef = useRef<Set<string>>(new Set());
+  const processedRoomMsgIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+  useEffect(() => {
+    authTokenRef.current = authToken;
+  }, [authToken]);
+  useEffect(() => {
+    selectedRecipientRef.current = selectedRecipient;
+  }, [selectedRecipient]);
+  useEffect(() => {
+    selectedRoomIdRef.current = selectedRoomId;
+  }, [selectedRoomId]);
+  useEffect(() => {
+    activeSubTabRef.current = activeSubTab;
+  }, [activeSubTab]);
+  useEffect(() => {
+    membersRef.current = members;
+  }, [members]);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   const myStreak = useMemo(
     () => (currentUser ? getDailyAltarProgress(currentUser.id).currentStreak : 0),
@@ -180,12 +218,30 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
 
   const buildAuthHeaders = (includeJson = false): Record<string, string> => {
     const headers: Record<string, string> = {};
+    const activeToken = authTokenRef.current;
+    const activeUser = currentUserRef.current;
     if (includeJson) headers['Content-Type'] = 'application/json';
-    if (authToken) headers.Authorization = `Bearer ${authToken}`;
-    if (currentUser?.id) headers['X-Kingdom-User-Id'] = currentUser.id;
-    if (currentUser?.email) headers['X-Kingdom-User-Email'] = currentUser.email;
+    if (activeToken) headers.Authorization = `Bearer ${activeToken}`;
+    if (activeUser?.id) headers['X-Kingdom-User-Id'] = activeUser.id;
+    if (activeUser?.email) headers['X-Kingdom-User-Email'] = activeUser.email;
     return headers;
   };
+
+  const buildSyntheticProfile = (userId: string): UserProfile => ({
+    id: userId,
+    email: '',
+    full_name: 'KINGDOM+ Member',
+    username: userId.slice(0, 12),
+    bio: '',
+    location: 'Global',
+    denomination_or_church: '',
+    role: 'member',
+    is_suspended: false,
+    is_online: false,
+    last_seen_at: new Date().toISOString(),
+    preferences: { favoriteCategories: [], favoriteMinisters: [] },
+    created_at: new Date().toISOString(),
+  });
 
   // Fetch Members (Server API + Supabase fallback merge so live online status works everywhere)
   const fetchCommunityData = async () => {
@@ -340,7 +396,9 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   };
 
   const fetchConversations = async () => {
-    if (!authToken || !currentUser) return;
+    const activeToken = authTokenRef.current;
+    const activeUser = currentUserRef.current;
+    if (!activeToken || !activeUser) return;
     try {
       const res = await fetch('/api/messages/conversations', {
         headers: buildAuthHeaders(false),
@@ -362,30 +420,31 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       const { data: sbConvs } = await sb
         .from('conversations')
         .select('*')
-        .or(`participant_one_id.eq.${currentUser.id},participant_two_id.eq.${currentUser.id}`)
+        .or(`participant_one_id.eq.${activeUser.id},participant_two_id.eq.${activeUser.id}`)
         .order('last_message_at', { ascending: false });
       if (Array.isArray(sbConvs)) {
-        const hydrated: Conversation[] = sbConvs
-          .map((c: any) => {
-            const otherId =
-              c.participant_one_id === currentUser.id
-                ? c.participant_two_id
-                : c.participant_one_id;
-            const other = members.find((m) => m.id === otherId);
-            return {
-              ...c,
-              other_participant: other,
-              unread_count: 0,
-            };
-          })
-          .filter((c) => Boolean(c.other_participant));
+        const hydrated: Conversation[] = sbConvs.map((c: any) => {
+          const otherId =
+            c.participant_one_id === activeUser.id
+              ? c.participant_two_id
+              : c.participant_one_id;
+          const other =
+            membersRef.current.find((m) => m.id === otherId) || buildSyntheticProfile(otherId);
+          return {
+            ...c,
+            other_participant: other,
+            unread_count: 0,
+          };
+        });
         setConversations(hydrated);
       }
     } catch {}
   };
 
   const fetchMessagesForRecipient = async (recipientId: string) => {
-    if (!authToken || !currentUser) return;
+    const activeToken = authTokenRef.current;
+    const activeUser = currentUserRef.current;
+    if (!activeToken || !activeUser) return;
     try {
       const res = await fetch(`/api/messages/${recipientId}`, {
         headers: buildAuthHeaders(false),
@@ -394,7 +453,32 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       if (res.ok && ct.includes('application/json')) {
         const data = await res.json();
         if (Array.isArray(data.messages)) {
-          setMessages(data.messages);
+          const serverMsgs: DirectMessage[] = data.messages;
+          const serverConvId = data.conversationId || serverMsgs[0]?.conversation_id || null;
+          setMessages((prev) => {
+            if (selectedRecipientRef.current?.id !== recipientId) return prev;
+            const byId = new Map<string, DirectMessage>();
+            for (const m of serverMsgs) byId.set(m.id, m);
+            // Keep any fresher real-time WS messages belonging to this same conversation
+            for (const m of prev) {
+              if (!byId.has(m.id) && (!serverConvId || m.conversation_id === serverConvId)) {
+                byId.set(m.id, m);
+              }
+            }
+            const merged = Array.from(byId.values()).sort(
+              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            );
+            try {
+              const key = `${LOCAL_DM_KEY_PREFIX}${[activeUser.id, recipientId].sort().join('_')}`;
+              localStorage.setItem(key, JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.other_participant?.id === recipientId ? { ...c, unread_count: 0 } : c
+            )
+          );
           return;
         }
       }
@@ -402,7 +486,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
 
     // Fallback to local thread cache if offline
     try {
-      const key = `${LOCAL_DM_KEY_PREFIX}${[currentUser.id, recipientId].sort().join('_')}`;
+      const key = `${LOCAL_DM_KEY_PREFIX}${[activeUser.id, recipientId].sort().join('_')}`;
       const raw = localStorage.getItem(key);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -413,38 +497,438 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     } catch {}
   };
 
-  useEffect(() => {
+  // Idempotent handler for incoming Direct Messages (via WebSocket or Supabase Realtime)
+  const applyIncomingDirectMessage = (
+    incomingMsg: DirectMessage,
+    incomingConv?: Partial<Conversation> | null,
+    incomingSender?: UserProfile | null
+  ) => {
+    const me = currentUserRef.current;
+    if (!me || !incomingMsg?.id) return;
+
+    const otherId =
+      incomingMsg.sender_id === me.id
+        ? incomingConv
+          ? incomingConv.participant_one_id === me.id
+            ? incomingConv.participant_two_id
+            : incomingConv.participant_one_id
+          : selectedRecipientRef.current?.id
+        : incomingMsg.sender_id;
+
+    if (!otherId) return;
+
+    const activeRecip = selectedRecipientRef.current;
+    const isViewingThisThread = Boolean(activeRecip && activeRecip.id === otherId);
+    const isFocusedOnThread = Boolean(
+      isViewingThisThread && activeSubTabRef.current === 'messages' && !document.hidden
+    );
+
+    if (isViewingThisThread) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === incomingMsg.id)) return prev;
+        const next = [...prev, incomingMsg];
+        try {
+          const key = `${LOCAL_DM_KEY_PREFIX}${[me.id, otherId].sort().join('_')}`;
+          localStorage.setItem(key, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      // Acknowledge read status immediately back to server & sender when chat is open & visible
+      if (incomingMsg.sender_id !== me.id && isFocusedOnThread) {
+        fetch(`/api/messages/${otherId}`, {
+          headers: buildAuthHeaders(false),
+        }).catch(() => {});
+      }
+    }
+
+    const isFirstTimeSeen = !processedDmIdsRef.current.has(incomingMsg.id);
+    processedDmIdsRef.current.add(incomingMsg.id);
+    if (processedDmIdsRef.current.size > 500) {
+      const oldest = processedDmIdsRef.current.values().next().value;
+      if (oldest) processedDmIdsRef.current.delete(oldest);
+    }
+
+    const previewText =
+      incomingMsg.content ||
+      (incomingMsg.attachment?.event_title
+        ? `Event: ${incomingMsg.attachment.event_title}`
+        : 'Attached an event flyer');
+    const shouldIncrementUnread =
+      isFirstTimeSeen && incomingMsg.sender_id !== me.id && !isFocusedOnThread;
+
+    const resolvedOther: UserProfile =
+      (incomingSender && incomingSender.id === otherId ? incomingSender : null) ||
+      membersRef.current.find((m) => m.id === otherId) ||
+      conversationsRef.current.find((c) => c.other_participant?.id === otherId)?.other_participant ||
+      buildSyntheticProfile(otherId);
+
+    setConversations((prev) => {
+      const idx = prev.findIndex(
+        (c) =>
+          c.id === incomingMsg.conversation_id ||
+          c.other_participant?.id === otherId
+      );
+      let next: Conversation[];
+      if (idx === -1) {
+        const created: Conversation = {
+          id: incomingMsg.conversation_id,
+          participant_one_id: incomingConv?.participant_one_id || incomingMsg.sender_id,
+          participant_two_id: incomingConv?.participant_two_id || otherId,
+          last_message_text: previewText,
+          last_message_at: incomingMsg.created_at,
+          unread_count: shouldIncrementUnread ? 1 : 0,
+          other_participant: resolvedOther,
+        };
+        next = [created, ...prev];
+      } else {
+        const existing = prev[idx];
+        const updated: Conversation = {
+          ...existing,
+          last_message_text: previewText,
+          last_message_at: incomingMsg.created_at,
+          unread_count: isFocusedOnThread
+            ? 0
+            : (existing.unread_count || 0) + (shouldIncrementUnread ? 1 : 0),
+          other_participant: existing.other_participant || resolvedOther,
+        };
+        next = [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      }
+      return next.sort(
+        (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+      );
+    });
+
+    if (shouldIncrementUnread) {
+      emitAppToast(`New message from ${resolvedOther.full_name}: ${previewText.slice(0, 60)}`);
+    }
+  };
+
+  // Idempotent handler for incoming Fellowship Room messages
+  const applyIncomingRoomMessage = (roomId: FellowshipRoomId, incomingMsg: FellowshipRoomMessage) => {
+    if (!roomId || !incomingMsg?.id) return;
+    const isNew = !processedRoomMsgIdsRef.current.has(incomingMsg.id);
+    processedRoomMsgIdsRef.current.add(incomingMsg.id);
+    if (processedRoomMsgIdsRef.current.size > 500) {
+      const oldest = processedRoomMsgIdsRef.current.values().next().value;
+      if (oldest) processedRoomMsgIdsRef.current.delete(oldest);
+    }
+    if (isNew) {
+      setRoomSummary((prev) => {
+        const cur = prev[roomId] || { count: 0, lastMessageAt: null };
+        return {
+          ...prev,
+          [roomId]: {
+            count: cur.count + 1,
+            lastMessageAt: incomingMsg.created_at,
+          },
+        };
+      });
+    }
+    if (selectedRoomIdRef.current === roomId) {
+      setRoomMessages((prev) => {
+        if (prev.some((m) => m.id === incomingMsg.id)) return prev;
+        const next = [...prev, incomingMsg];
+        try {
+          localStorage.setItem(`${LOCAL_ROOMS_KEY_PREFIX}${roomId}`, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    }
+  };
+
+  const resyncAllCommunityState = () => {
     fetchCommunityData();
     fetchRoomSummary();
-    if (authToken) fetchConversations();
-    if (selectedRoomId) fetchRoomMessages(selectedRoomId);
-
-    const pollMs = isDataSaverActive ? 15000 : 4000;
-    const interval = window.setInterval(() => {
-      if (document.hidden) return;
-      fetchCommunityData();
-      if (activeSubTab === 'rooms') {
-        fetchRoomSummary();
-        if (selectedRoomId) fetchRoomMessages(selectedRoomId);
+    if (selectedRoomIdRef.current) {
+      fetchRoomMessages(selectedRoomIdRef.current);
+    }
+    if (authTokenRef.current && currentUserRef.current) {
+      fetchConversations();
+      if (selectedRecipientRef.current) {
+        fetchMessagesForRecipient(selectedRecipientRef.current.id);
       }
-      if (authToken && activeSubTab === 'messages') {
-        fetchConversations();
-        if (selectedRecipient) {
-          fetchMessagesForRecipient(selectedRecipient.id);
+    }
+  };
+
+  // Persistent Real-Time WebSocket Engine (/ws/community) + Reconnect Resync
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let disposed = false;
+    let pingTimer: number | null = null;
+
+    const connectWebSocket = () => {
+      if (disposed) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const params = new URLSearchParams();
+      if (authToken) params.set('token', authToken);
+      if (currentUser?.id) params.set('userId', currentUser.id);
+      if (currentUser?.email) params.set('email', currentUser.email);
+
+      const wsUrl = `${protocol}//${window.location.host}/ws/community?${params.toString()}`;
+      setWsStatus(reconnectAttemptRef.current > 0 ? 'reconnecting' : 'connecting');
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+      } catch {
+        setWsStatus('reconnecting');
+        return;
+      }
+
+      ws.onopen = () => {
+        if (disposed) {
+          ws.close();
+          return;
         }
-      }
-    }, pollMs);
+        reconnectAttemptRef.current = 0;
+        setWsStatus('live');
 
-    const handleFocusRefresh = () => {
-      if (!document.hidden) {
-        fetchCommunityData();
+        if (authToken && currentUser?.id) {
+          try {
+            ws.send(
+              JSON.stringify({
+                type: 'auth',
+                token: authToken,
+                userId: currentUser.id,
+                email: currentUser.email,
+              })
+            );
+          } catch {}
+        }
+
+        if (pingTimer) window.clearInterval(pingTimer);
+        pingTimer = window.setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+            } catch {}
+          }
+        }, 25000);
+
+        resyncAllCommunityState();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(String(event.data));
+          if (!data?.type) return;
+
+          if (data.type === 'ws:ready') {
+            setWsStatus('live');
+            resyncAllCommunityState();
+            return;
+          }
+
+          if (data.type === 'dm:message' && data.message) {
+            applyIncomingDirectMessage(
+              data.message as DirectMessage,
+              data.conversation || null,
+              data.sender || null
+            );
+            return;
+          }
+
+          if (data.type === 'dm:read' && data.conversationId) {
+            if (data.readerId !== currentUserRef.current?.id) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.conversation_id === data.conversationId &&
+                  m.sender_id === currentUserRef.current?.id &&
+                  !m.is_read
+                    ? { ...m, is_read: true, read_at: new Date().toISOString() }
+                    : m
+                )
+              );
+            }
+            return;
+          }
+
+          if (data.type === 'room:message' && data.roomId && data.message) {
+            applyIncomingRoomMessage(
+              data.roomId as FellowshipRoomId,
+              data.message as FellowshipRoomMessage
+            );
+            return;
+          }
+
+          if (data.type === 'room:amen' && data.roomId && data.message) {
+            if (selectedRoomIdRef.current === data.roomId) {
+              setRoomMessages((prev) =>
+                prev.map((m) => (m.id === data.message.id ? data.message : m))
+              );
+            }
+            return;
+          }
+
+          if (data.type === 'presence:update' && data.userId) {
+            const isOnline = Boolean(data.is_online);
+            const lastSeenAt = data.last_seen_at || new Date().toISOString();
+            setMembers((prev) =>
+              prev.map((m) =>
+                m.id === data.userId ? { ...m, is_online: isOnline, last_seen_at: lastSeenAt } : m
+              )
+            );
+            setSelectedRecipient((prev) =>
+              prev && prev.id === data.userId
+                ? { ...prev, is_online: isOnline, last_seen_at: lastSeenAt }
+                : prev
+            );
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.other_participant && c.other_participant.id === data.userId
+                  ? {
+                      ...c,
+                      other_participant: {
+                        ...c.other_participant,
+                        is_online: isOnline,
+                        last_seen_at: lastSeenAt,
+                      },
+                    }
+                  : c
+              )
+            );
+          }
+        } catch {
+          // Ignore malformed WS frame
+        }
+      };
+
+      ws.onclose = () => {
+        if (pingTimer) {
+          window.clearInterval(pingTimer);
+          pingTimer = null;
+        }
+        if (wsRef.current === ws) wsRef.current = null;
+        if (disposed) return;
+
+        setWsStatus('reconnecting');
+        const delayMs = Math.min(10000, 1000 * Math.pow(2, reconnectAttemptRef.current));
+        reconnectAttemptRef.current += 1;
+        if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = window.setTimeout(connectWebSocket, delayMs);
+      };
+
+      ws.onerror = () => {
+        // onclose handles reconnect cleanly
+      };
+    };
+
+    connectWebSocket();
+
+    return () => {
+      disposed = true;
+      if (pingTimer) window.clearInterval(pingTimer);
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+        wsRef.current = null;
       }
     };
-    window.addEventListener('focus', handleFocusRefresh);
+  }, [currentUser?.id, currentUser?.email, authToken]);
+
+  // Dual-Layer Supabase Realtime Backup (for static hosting without Node WebSocket server)
+  useEffect(() => {
+    const sb = getSupabaseClient();
+    if (!sb) return;
+    let channel: ReturnType<typeof sb.channel> | null = null;
+
+    try {
+      channel = sb
+        .channel(`kingdom-community-realtime-${currentUser?.id || 'guest'}`)
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'direct_messages' },
+          (payload: any) => {
+            const row = payload?.new;
+            const me = currentUserRef.current;
+            if (!row?.id || !me) return;
+
+            const matchedConv = conversationsRef.current.find(
+              (c) => c.id === row.conversation_id
+            );
+            const activeRecip = selectedRecipientRef.current;
+            const involvesMe =
+              row.sender_id === me.id ||
+              Boolean(matchedConv) ||
+              (activeRecip && row.sender_id === activeRecip.id);
+            if (!involvesMe) return;
+
+            const incomingMsg: DirectMessage = {
+              id: row.id,
+              conversation_id: row.conversation_id,
+              sender_id: row.sender_id,
+              content: row.content || '',
+              ...(row.attachment ? { attachment: row.attachment } : {}),
+              is_read: Boolean(row.is_read),
+              created_at: row.created_at || new Date().toISOString(),
+            };
+            applyIncomingDirectMessage(incomingMsg, matchedConv || null, null);
+            if (!matchedConv) {
+              fetchConversations();
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'fellowship_room_messages' },
+          (payload: any) => {
+            const row = payload?.new;
+            if (!row?.id || !row?.room_id) return;
+            const incomingMsg: FellowshipRoomMessage = {
+              id: row.id,
+              room_id: row.room_id,
+              user_id: row.user_id,
+              user_full_name: row.user_full_name || 'Believer',
+              user_username: row.user_username || 'member',
+              user_location: row.user_location || 'Nigeria',
+              content: row.content || '',
+              ...(row.attachment ? { attachment: row.attachment } : {}),
+              amen_user_ids: Array.isArray(row.amen_user_ids) ? row.amen_user_ids : [],
+              created_at: row.created_at || new Date().toISOString(),
+            };
+            applyIncomingRoomMessage(row.room_id as FellowshipRoomId, incomingMsg);
+          }
+        )
+        .subscribe();
+    } catch {
+      // Ignore if Realtime is unavailable
+    }
+
+    return () => {
+      if (channel) {
+        try {
+          sb.removeChannel(channel);
+        } catch {}
+      }
+    };
+  }, [currentUser?.id]);
+
+  // Initial Data Load, Focus Resync & Light Fallback Safety-Net Polling
+  useEffect(() => {
+    resyncAllCommunityState();
+
+    const safetyPollMs = isDataSaverActive ? 25000 : 15000;
+    const interval = window.setInterval(() => {
+      if (document.hidden) return;
+      resyncAllCommunityState();
+    }, safetyPollMs);
+
+    const handleVisibilityOrFocus = () => {
+      if (!document.hidden) {
+        resyncAllCommunityState();
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener('focus', handleFocusRefresh);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [authToken, currentUser?.id, selectedRecipient?.id, selectedRoomId, activeSubTab, isDataSaverActive]);
 
@@ -637,9 +1121,10 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     }
 
     const content = textToSend.trim();
+    const targetRecipient = selectedRecipient;
     setSendingMsg(true);
     try {
-      const res = await fetch(`/api/messages/${selectedRecipient.id}`, {
+      const res = await fetch(`/api/messages/${targetRecipient.id}`, {
         method: 'POST',
         headers: buildAuthHeaders(true),
         body: JSON.stringify({
@@ -651,11 +1136,14 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       if (res.ok && ct.includes('application/json')) {
         const data = await res.json();
         if (data.message) {
-          setMessages((prev) => [...prev, data.message]);
+          applyIncomingDirectMessage(
+            data.message as DirectMessage,
+            data.conversation || null,
+            targetRecipient
+          );
           setMessageInput('');
           setDraftDmAttachment({});
           setShowDmAttachmentTray(false);
-          fetchConversations();
           return;
         }
       } else if (ct.includes('application/json')) {
@@ -670,21 +1158,14 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       // Offline / static fallback persistence
       const localMsg: DirectMessage = {
         id: crypto.randomUUID ? crypto.randomUUID() : `dm-${Date.now()}`,
-        conversation_id: `conv-${[currentUser.id, selectedRecipient.id].sort().join('_')}`,
+        conversation_id: `conv-${[currentUser.id, targetRecipient.id].sort().join('_')}`,
         sender_id: currentUser.id,
         content,
         ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
         is_read: false,
         created_at: new Date().toISOString(),
       };
-      setMessages((prev) => {
-        const next = [...prev, localMsg];
-        try {
-          const key = `${LOCAL_DM_KEY_PREFIX}${[currentUser.id, selectedRecipient.id].sort().join('_')}`;
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch {}
-        return next;
-      });
+      applyIncomingDirectMessage(localMsg, null, targetRecipient);
       setMessageInput('');
       setDraftDmAttachment({});
       setShowDmAttachmentTray(false);
@@ -709,10 +1190,11 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       onRequireAuth();
       return;
     }
+    const roomId = selectedRoomId;
     const content = textToSend.trim();
     setSendingRoomMsg(true);
     try {
-      const res = await fetch(`/api/community/rooms/${selectedRoomId}/messages`, {
+      const res = await fetch(`/api/community/rooms/${roomId}/messages`, {
         method: 'POST',
         headers: buildAuthHeaders(true),
         body: JSON.stringify({
@@ -724,17 +1206,16 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       if (res.ok && ct.includes('application/json')) {
         const data = await res.json();
         if (data.message) {
-          setRoomMessages((prev) => [...prev, data.message]);
+          applyIncomingRoomMessage(roomId, data.message as FellowshipRoomMessage);
           setRoomMessageInput('');
           setDraftRoomAttachment({});
           setShowRoomAttachmentTray(false);
-          fetchRoomSummary();
           return;
         }
       }
       const localMsg: FellowshipRoomMessage = {
         id: `rmsg-${Date.now()}`,
-        room_id: selectedRoomId,
+        room_id: roomId,
         user_id: currentUser.id,
         user_full_name: currentUser.full_name,
         user_username: currentUser.username,
@@ -744,13 +1225,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         amen_user_ids: [],
         created_at: new Date().toISOString(),
       };
-      setRoomMessages((prev) => {
-        const next = [...prev, localMsg];
-        try {
-          localStorage.setItem(`${LOCAL_ROOMS_KEY_PREFIX}${selectedRoomId}`, JSON.stringify(next));
-        } catch {}
-        return next;
-      });
+      applyIncomingRoomMessage(roomId, localMsg);
       setRoomMessageInput('');
       setDraftRoomAttachment({});
       setShowRoomAttachmentTray(false);
@@ -845,7 +1320,21 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
             </p>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono tabular-nums shrink-0">
+          <div className="flex items-center flex-wrap gap-2 text-xs text-zinc-400 font-mono tabular-nums shrink-0">
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border ${
+                wsStatus === 'live'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  wsStatus === 'live' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-pulse'
+                }`}
+              />
+              <span>{wsStatus === 'live' ? 'Real-time Live' : 'Syncing...'}</span>
+            </span>
             <button
               type="button"
               onClick={() => {
@@ -1324,6 +1813,9 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
                         type="button"
                         onClick={() => {
                           setSelectedRecipient(other);
+                          setConversations((prev) =>
+                            prev.map((c) => (c.id === conv.id ? { ...c, unread_count: 0 } : c))
+                          );
                           fetchMessagesForRecipient(other.id);
                         }}
                         className={`w-full text-left p-3.5 rounded-lg border transition-colors flex items-start justify-between gap-3 ${

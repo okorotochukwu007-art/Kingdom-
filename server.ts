@@ -2,8 +2,10 @@ import 'dotenv/config';
 import crypto from 'crypto';
 import express, { Request, Response } from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
+import { WebSocket, WebSocketServer } from 'ws';
 import { classifyVideoWithGemini, evaluateMarriageAndRelationships } from './server/geminiService.ts';
 import { NIGERIAN_CHRISTIAN_SEARCH_PHRASES } from './server/seedData.ts';
 import { hashPassword, store } from './server/store.ts';
@@ -67,9 +69,84 @@ communityMessagesDb.backfillFromLegacyStore({
 });
 
 const app = express();
+const httpServer = http.createServer(app);
 const PORT = 3000;
 
 app.use(express.json({ limit: '5mb' }));
+
+// ============================================================================
+// REAL-TIME COMMUNITY WEBSOCKET ENGINE (/ws/community)
+// ============================================================================
+const communityWss = new WebSocketServer({ noServer: true });
+const userSockets = new Map<string, Set<WebSocket>>();
+const allCommunitySockets = new Set<WebSocket>();
+const socketMeta = new WeakMap<WebSocket, { userId: string | null }>();
+
+function sendWsJson(ws: WebSocket, payload: Record<string, unknown>) {
+  if (ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch {
+      // Ignore closed socket send errors
+    }
+  }
+}
+
+function broadcastAllCommunity(payload: Record<string, unknown>) {
+  for (const client of allCommunitySockets) {
+    sendWsJson(client, payload);
+  }
+}
+
+function pushToUsers(userIds: string[], payload: Record<string, unknown>) {
+  const uniqueIds = new Set(userIds.filter(Boolean));
+  for (const uid of uniqueIds) {
+    const sockets = userSockets.get(uid);
+    if (!sockets) continue;
+    for (const client of sockets) {
+      sendWsJson(client, payload);
+    }
+  }
+}
+
+function attachSocketToUser(ws: WebSocket, user: UserProfile | null) {
+  const prev = socketMeta.get(ws);
+  if (prev?.userId && prev.userId !== user?.id) {
+    const oldSet = userSockets.get(prev.userId);
+    if (oldSet) {
+      oldSet.delete(ws);
+      if (oldSet.size === 0) userSockets.delete(prev.userId);
+    }
+  }
+
+  if (user) {
+    let set = userSockets.get(user.id);
+    if (!set) {
+      set = new Set<WebSocket>();
+      userSockets.set(user.id, set);
+    }
+    set.add(ws);
+    socketMeta.set(ws, { userId: user.id });
+    touchUserPresence(user, true, true);
+    broadcastAllCommunity({
+      type: 'presence:update',
+      userId: user.id,
+      is_online: true,
+      last_seen_at: user.last_seen_at,
+    });
+  } else if (!prev) {
+    socketMeta.set(ws, { userId: null });
+  }
+}
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const rawUrl = req.url || '';
+  if (rawUrl.startsWith('/ws/community')) {
+    communityWss.handleUpgrade(req, socket, head, (ws) => {
+      communityWss.emit('connection', ws, req);
+    });
+  }
+});
 
 function getAuthenticatedUser(req: Request): UserProfile | null {
   const authHeader = req.headers.authorization;
@@ -1182,6 +1259,12 @@ app.post('/api/community/rooms/:roomId/messages', async (req: Request, res: Resp
     ).catch(() => {});
   }
 
+  broadcastAllCommunity({
+    type: 'room:message',
+    roomId,
+    message: msg,
+  });
+
   res.json({ message: msg });
 });
 
@@ -1214,6 +1297,12 @@ app.post('/api/community/rooms/:roomId/messages/:msgId/amen', async (req: Reques
         .eq('id', updatedMsg.id)
     ).catch(() => {});
   }
+
+  broadcastAllCommunity({
+    type: 'room:amen',
+    roomId,
+    message: updatedMsg,
+  });
 
   res.json({ message: updatedMsg });
 });
@@ -1457,11 +1546,50 @@ app.get('/api/messages/conversations', async (req: Request, res: Response) => {
   );
 
   const dbConvs = communityMessagesDb.getUserConversations(user.id);
+
+  // Ensure any Supabase-only participants in conversations are hydrated into store.state.users
+  const missingParticipantIds = dbConvs
+    .map((c) => (c.participant_one_id === user.id ? c.participant_two_id : c.participant_one_id))
+    .filter((pid) => pid && !store.state.users.some((u) => u.id === pid));
+
+  if (missingParticipantIds.length > 0 && store.supabase && store.supabaseConnected) {
+    try {
+      const { data: missingProfiles } = await store.supabase
+        .from('profiles')
+        .select('*')
+        .in('id', missingParticipantIds);
+      if (Array.isArray(missingProfiles)) {
+        for (const p of missingProfiles) {
+          if (!p?.id || store.state.users.some((u) => u.id === p.id)) continue;
+          store.state.users.push({
+            id: p.id,
+            auth_user_id: p.auth_user_id,
+            email: p.email || '',
+            full_name: p.full_name || 'Believer',
+            username: p.username || 'member',
+            avatar_url: p.avatar_url || '',
+            bio: p.bio || '',
+            location: p.location || 'Nigeria',
+            denomination_or_church: p.denomination_or_church || '',
+            role: p.role || 'member',
+            is_suspended: Boolean(p.is_suspended),
+            is_online: Boolean(p.is_online),
+            last_seen_at: p.last_seen_at || new Date().toISOString(),
+            preferences: p.preferences || { favoriteCategories: [], favoriteMinisters: [] },
+            created_at: p.created_at || new Date().toISOString(),
+          });
+        }
+      }
+    } catch {
+      // Fall back cleanly below
+    }
+  }
+
   const convs = dbConvs
     .map((c) => {
       const otherId = c.participant_one_id === user.id ? c.participant_two_id : c.participant_one_id;
       const otherRaw = store.state.users.find((u) => u.id === otherId);
-      const otherParticipant = otherRaw
+      const otherParticipant: UserProfile = otherRaw
         ? (() => {
             const { password_hash: _, ...safe } = otherRaw;
             const isRecentlyActive =
@@ -1471,13 +1599,27 @@ app.get('/api/messages/conversations', async (req: Request, res: Response) => {
               is_online: Boolean(safe.is_online && isRecentlyActive),
             };
           })()
-        : undefined;
+        : {
+            id: otherId,
+            email: '',
+            full_name: 'KINGDOM+ Member',
+            username: otherId.slice(0, 12),
+            bio: '',
+            location: 'Global',
+            denomination_or_church: '',
+            role: 'member',
+            is_suspended: false,
+            is_online: false,
+            last_seen_at: c.last_message_at,
+            preferences: { favoriteCategories: [], favoriteMinisters: [] },
+            created_at: c.last_message_at,
+          };
       return {
         ...c,
         other_participant: otherParticipant,
       };
     })
-    .filter((c) => c.other_participant && !blockedByMe.has(c.other_participant.id))
+    .filter((c) => !blockedByMe.has(c.other_participant.id))
     .sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
 
   res.json({ conversations: convs });
@@ -1581,6 +1723,11 @@ app.get('/api/messages/:otherUserId', async (req: Request, res: Response) => {
           .eq('is_read', false)
       ).catch(() => {});
     }
+    pushToUsers([otherId, user.id], {
+      type: 'dm:read',
+      conversationId: conv.id,
+      readerId: user.id,
+    });
   }
 
   const messages = communityMessagesDb.getDirectMessages(conv.id, 200);
@@ -1685,6 +1832,7 @@ app.post('/api/messages/:otherUserId', async (req: Request, res: Response) => {
         conversation_id: message.conversation_id,
         sender_id: message.sender_id,
         content: message.content,
+        attachment: message.attachment || null,
         is_read: false,
         created_at: message.created_at,
       })
@@ -1707,6 +1855,16 @@ app.post('/api/messages/:otherUserId', async (req: Request, res: Response) => {
       })
     ).catch(() => {});
   }
+
+  const { password_hash: _senderHash, ...safeSender } = user as UserProfile & {
+    password_hash?: string;
+  };
+  pushToUsers([user.id, otherId], {
+    type: 'dm:message',
+    message,
+    conversation: conv,
+    sender: safeSender,
+  });
 
   res.json({ message, conversation: conv });
 });
@@ -2675,8 +2833,84 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`KINGDOM+ Server running at http://0.0.0.0:${PORT}`);
+  communityWss.on('connection', async (ws, req) => {
+    allCommunitySockets.add(ws);
+    socketMeta.set(ws, { userId: null });
+
+    const authenticateFromParams = async (
+      tokenParam: string,
+      userIdParam: string,
+      emailParam: string
+    ) => {
+      if (!tokenParam && !userIdParam) return;
+      const syntheticReq = {
+        headers: {
+          authorization: tokenParam ? `Bearer ${tokenParam}` : '',
+          'x-kingdom-user-id': userIdParam,
+          'x-kingdom-user-email': emailParam,
+        },
+      } as unknown as Request;
+      const member = await resolveCommunityMember(syntheticReq);
+      if (member) {
+        attachSocketToUser(ws, member);
+        sendWsJson(ws, { type: 'ws:ready', userId: member.id });
+      }
+    };
+
+    try {
+      const reqUrl = new URL(req.url || '/ws/community', 'http://localhost');
+      const tokenParam = (reqUrl.searchParams.get('token') || '').trim();
+      const userIdParam = (reqUrl.searchParams.get('userId') || '').trim();
+      const emailParam = (reqUrl.searchParams.get('email') || '').trim();
+      await authenticateFromParams(tokenParam, userIdParam, emailParam);
+    } catch {
+      // Ignore malformed URL query
+    }
+
+    ws.on('message', async (raw) => {
+      try {
+        const msg = JSON.parse(String(raw));
+        if (msg?.type === 'ping') {
+          sendWsJson(ws, { type: 'pong', ts: Date.now() });
+        } else if (msg?.type === 'auth') {
+          await authenticateFromParams(
+            String(msg.token || ''),
+            String(msg.userId || ''),
+            String(msg.email || '')
+          );
+        }
+      } catch {
+        // Ignore malformed JSON frames
+      }
+    });
+
+    ws.on('close', () => {
+      allCommunitySockets.delete(ws);
+      const meta = socketMeta.get(ws);
+      if (meta?.userId) {
+        const set = userSockets.get(meta.userId);
+        if (set) {
+          set.delete(ws);
+          if (set.size === 0) {
+            userSockets.delete(meta.userId);
+            const u = store.state.users.find((x) => x.id === meta.userId);
+            if (u) {
+              touchUserPresence(u, false, true);
+              broadcastAllCommunity({
+                type: 'presence:update',
+                userId: u.id,
+                is_online: false,
+                last_seen_at: u.last_seen_at,
+              });
+            }
+          }
+        }
+      }
+    });
+  });
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`KINGDOM+ Server & WebSocket Hub running at http://0.0.0.0:${PORT}`);
   });
 }
 
