@@ -179,10 +179,88 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   const conversationsRef = useRef(conversations);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const supabaseChannelRef = useRef<any>(null);
+  const supabaseSubscribedRef = useRef(false);
+  const wsConnectedRef = useRef(false);
+  const wsUnavailableOnHostRef = useRef(false);
+  const hasEverOpenedWsRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const processedDmIdsRef = useRef<Set<string>>(new Set());
   const processedRoomMsgIdsRef = useRef<Set<string>>(new Set());
+
+  const syncTransportStatus = () => {
+    if (wsConnectedRef.current || supabaseSubscribedRef.current) {
+      setWsStatus('live');
+    } else if (wsUnavailableOnHostRef.current) {
+      setWsStatus('connecting');
+    } else {
+      setWsStatus('reconnecting');
+    }
+  };
+
+  const broadcastRealtimeEvent = (eventName: string, payload: Record<string, any>) => {
+    const ch = supabaseChannelRef.current;
+    if (!ch) return;
+    try {
+      Promise.resolve(
+        ch.send({
+          type: 'broadcast',
+          event: eventName,
+          payload,
+        })
+      ).catch(() => {});
+    } catch {}
+  };
+
+  const ensureSupabaseProfileExists = async (sb: any, profile: UserProfile): Promise<string> => {
+    if (!sb || !profile?.id) return profile?.id || '';
+    try {
+      const { data: byId } = await sb
+        .from('profiles')
+        .select('id')
+        .eq('id', profile.id)
+        .limit(1);
+      if (Array.isArray(byId) && byId[0]?.id) return byId[0].id;
+
+      const normalizedEmail = (profile.email || '').trim().toLowerCase();
+      if (normalizedEmail) {
+        const { data: byEmail } = await sb
+          .from('profiles')
+          .select('id')
+          .eq('email', normalizedEmail)
+          .limit(1);
+        if (Array.isArray(byEmail) && byEmail[0]?.id) return byEmail[0].id;
+      }
+
+      const { error: upsertErr } = await sb.from('profiles').upsert(
+        {
+          id: profile.id,
+          email: normalizedEmail || `${profile.id}@kingdom.local`,
+          full_name: profile.full_name || 'Believer',
+          username: profile.username || profile.id.slice(0, 12),
+          avatar_url: profile.avatar_url || '',
+          bio: profile.bio || '',
+          location: profile.location || 'Nigeria',
+          denomination_or_church: profile.denomination_or_church || '',
+          role: profile.role || 'member',
+          is_suspended: Boolean(profile.is_suspended),
+          is_online: Boolean(profile.is_online),
+          last_seen_at: profile.last_seen_at || new Date().toISOString(),
+        },
+        { onConflict: 'id', ignoreDuplicates: true }
+      );
+      if (upsertErr && normalizedEmail) {
+        const { data: retryByEmail } = await sb
+          .from('profiles')
+          .select('id')
+          .eq('email', normalizedEmail)
+          .limit(1);
+        if (Array.isArray(retryByEmail) && retryByEmail[0]?.id) return retryByEmail[0].id;
+      }
+    } catch {}
+    return profile.id;
+  };
 
   useEffect(() => {
     currentUserRef.current = currentUser;
@@ -361,31 +439,110 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   };
 
   const fetchRoomSummary = async () => {
+    if (!wsUnavailableOnHostRef.current) {
+      try {
+        const res = await fetch('/api/community/rooms/summary');
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data?.summary) {
+            setRoomSummary(data.summary);
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // Cloudflare Pages / static Supabase fallback
     try {
-      const res = await fetch('/api/community/rooms/summary');
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data?.summary) setRoomSummary(data.summary);
+      const sb = getSupabaseClient();
+      if (!sb) return;
+      const { data: rows, error } = await sb
+        .from('fellowship_room_messages')
+        .select('room_id, created_at')
+        .order('created_at', { ascending: false })
+        .limit(500);
+      if (!error && Array.isArray(rows)) {
+        const summary: Record<string, { count: number; lastMessageAt: string | null }> = {};
+        for (const r of FELLOWSHIP_ROOMS) {
+          summary[r.id] = { count: 0, lastMessageAt: null };
+        }
+        for (const row of rows as Array<{ room_id?: string; created_at?: string }>) {
+          if (!row?.room_id) continue;
+          if (!summary[row.room_id]) {
+            summary[row.room_id] = { count: 0, lastMessageAt: null };
+          }
+          summary[row.room_id].count += 1;
+          if (!summary[row.room_id].lastMessageAt && row.created_at) {
+            summary[row.room_id].lastMessageAt = row.created_at;
+          }
+        }
+        setRoomSummary(summary);
       }
     } catch {}
   };
 
   const fetchRoomMessages = async (roomId: FellowshipRoomId) => {
+    if (!wsUnavailableOnHostRef.current) {
+      try {
+        const res = await fetch(`/api/community/rooms/${roomId}/messages`);
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (Array.isArray(data.messages)) {
+            setRoomMessages(data.messages);
+            try {
+              localStorage.setItem(`${LOCAL_ROOMS_KEY_PREFIX}${roomId}`, JSON.stringify(data.messages));
+            } catch {}
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // Cloudflare Pages / static Supabase fallback
     try {
-      const res = await fetch(`/api/community/rooms/${roomId}/messages`);
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (Array.isArray(data.messages)) {
-          setRoomMessages(data.messages);
-          try {
-            localStorage.setItem(`${LOCAL_ROOMS_KEY_PREFIX}${roomId}`, JSON.stringify(data.messages));
-          } catch {}
+      const sb = getSupabaseClient();
+      if (sb) {
+        const { data: sbMsgs, error } = await sb
+          .from('fellowship_room_messages')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('created_at', { ascending: true })
+          .limit(100);
+        if (!error && Array.isArray(sbMsgs)) {
+          const normalized: FellowshipRoomMessage[] = sbMsgs.map((r: any) => ({
+            id: r.id,
+            room_id: r.room_id,
+            user_id: r.user_id,
+            user_full_name: r.user_full_name || 'Believer',
+            user_username: r.user_username || 'member',
+            user_location: r.user_location || 'Nigeria',
+            content: r.content || '',
+            ...(r.attachment ? { attachment: r.attachment } : {}),
+            amen_user_ids: Array.isArray(r.amen_user_ids) ? r.amen_user_ids : [],
+            created_at: r.created_at || new Date().toISOString(),
+          }));
+          setRoomMessages((prev) => {
+            if (selectedRoomIdRef.current !== roomId) return prev;
+            const byId = new Map<string, FellowshipRoomMessage>();
+            for (const m of normalized) byId.set(m.id, m);
+            for (const m of prev) {
+              if (!byId.has(m.id) && m.room_id === roomId) byId.set(m.id, m);
+            }
+            const merged = Array.from(byId.values()).sort(
+              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            );
+            try {
+              localStorage.setItem(`${LOCAL_ROOMS_KEY_PREFIX}${roomId}`, JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
           return;
         }
       }
     } catch {}
+
     try {
       const raw = localStorage.getItem(`${LOCAL_ROOMS_KEY_PREFIX}${roomId}`);
       if (raw) {
@@ -396,24 +553,25 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   };
 
   const fetchConversations = async () => {
-    const activeToken = authTokenRef.current;
     const activeUser = currentUserRef.current;
-    if (!activeToken || !activeUser) return;
-    try {
-      const res = await fetch('/api/messages/conversations', {
-        headers: buildAuthHeaders(false),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (Array.isArray(data.conversations)) {
-          setConversations(data.conversations);
-          return;
+    if (!activeUser) return;
+    if (!wsUnavailableOnHostRef.current) {
+      try {
+        const res = await fetch('/api/messages/conversations', {
+          headers: buildAuthHeaders(false),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (Array.isArray(data.conversations)) {
+            setConversations(data.conversations);
+            return;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
-    // Supabase direct conversations fallback for cloud-only sessions
+    // Cloudflare Pages / static Supabase fallback
     try {
       const sb = getSupabaseClient();
       if (!sb) return;
@@ -421,19 +579,70 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         .from('conversations')
         .select('*')
         .or(`participant_one_id.eq.${activeUser.id},participant_two_id.eq.${activeUser.id}`)
-        .order('last_message_at', { ascending: false });
+        .order('last_message_at', { ascending: false })
+        .limit(100);
       if (Array.isArray(sbConvs)) {
+        const convIds = sbConvs.map((c: any) => c.id).filter(Boolean);
+        const otherIds = Array.from(
+          new Set(
+            sbConvs
+              .map((c: any) =>
+                c.participant_one_id === activeUser.id ? c.participant_two_id : c.participant_one_id
+              )
+              .filter(Boolean)
+          )
+        );
+
+        const profileMap = new Map<string, UserProfile>();
+        for (const m of membersRef.current) profileMap.set(m.id, m);
+        const missingIds = otherIds.filter((id) => !profileMap.has(id));
+        if (missingIds.length > 0) {
+          const { data: sbProfiles } = await sb
+            .from('profiles')
+            .select('*')
+            .in('id', missingIds);
+          if (Array.isArray(sbProfiles)) {
+            const nowMs = Date.now();
+            for (const p of sbProfiles as UserProfile[]) {
+              if (!p?.id) continue;
+              const isRecent =
+                Boolean(p.is_online) &&
+                nowMs - new Date(p.last_seen_at || 0).getTime() < 3 * 60 * 1000;
+              profileMap.set(p.id, { ...p, is_online: isRecent });
+            }
+          }
+        }
+
+        const unreadByConv = new Map<string, number>();
+        if (convIds.length > 0) {
+          const { data: unreadRows } = await sb
+            .from('direct_messages')
+            .select('conversation_id')
+            .in('conversation_id', convIds)
+            .eq('is_read', false)
+            .neq('sender_id', activeUser.id);
+          if (Array.isArray(unreadRows)) {
+            for (const row of unreadRows as Array<{ conversation_id?: string }>) {
+              if (row?.conversation_id) {
+                unreadByConv.set(
+                  row.conversation_id,
+                  (unreadByConv.get(row.conversation_id) || 0) + 1
+                );
+              }
+            }
+          }
+        }
+
         const hydrated: Conversation[] = sbConvs.map((c: any) => {
           const otherId =
             c.participant_one_id === activeUser.id
               ? c.participant_two_id
               : c.participant_one_id;
-          const other =
-            membersRef.current.find((m) => m.id === otherId) || buildSyntheticProfile(otherId);
+          const other = profileMap.get(otherId) || buildSyntheticProfile(otherId);
           return {
             ...c,
             other_participant: other,
-            unread_count: 0,
+            unread_count: unreadByConv.get(c.id) || 0,
           };
         });
         setConversations(hydrated);
@@ -442,26 +651,126 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   };
 
   const fetchMessagesForRecipient = async (recipientId: string) => {
-    const activeToken = authTokenRef.current;
     const activeUser = currentUserRef.current;
-    if (!activeToken || !activeUser) return;
+    if (!activeUser) return;
+    if (!wsUnavailableOnHostRef.current) {
+      try {
+        const res = await fetch(`/api/messages/${recipientId}`, {
+          headers: buildAuthHeaders(false),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (Array.isArray(data.messages)) {
+            const serverMsgs: DirectMessage[] = data.messages;
+            const serverConvId = data.conversationId || serverMsgs[0]?.conversation_id || null;
+            setMessages((prev) => {
+              if (selectedRecipientRef.current?.id !== recipientId) return prev;
+              const byId = new Map<string, DirectMessage>();
+              for (const m of serverMsgs) byId.set(m.id, m);
+              for (const m of prev) {
+                if (!byId.has(m.id) && (!serverConvId || m.conversation_id === serverConvId)) {
+                  byId.set(m.id, m);
+                }
+              }
+              const merged = Array.from(byId.values()).sort(
+                (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+              );
+              try {
+                const key = `${LOCAL_DM_KEY_PREFIX}${[activeUser.id, recipientId].sort().join('_')}`;
+                localStorage.setItem(key, JSON.stringify(merged));
+              } catch {}
+              return merged;
+            });
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.other_participant?.id === recipientId ? { ...c, unread_count: 0 } : c
+              )
+            );
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // Cloudflare Pages / static Supabase fallback
     try {
-      const res = await fetch(`/api/messages/${recipientId}`, {
-        headers: buildAuthHeaders(false),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (Array.isArray(data.messages)) {
-          const serverMsgs: DirectMessage[] = data.messages;
-          const serverConvId = data.conversationId || serverMsgs[0]?.conversation_id || null;
+      const sb = getSupabaseClient();
+      if (sb) {
+        const { data: sbConvRows, error: convErr } = await sb
+          .from('conversations')
+          .select('*')
+          .or(
+            `and(participant_one_id.eq.${activeUser.id},participant_two_id.eq.${recipientId}),and(participant_one_id.eq.${recipientId},participant_two_id.eq.${activeUser.id})`
+          )
+          .order('last_message_at', { ascending: false })
+          .limit(1);
+
+        const sbConv = Array.isArray(sbConvRows) ? sbConvRows[0] : null;
+        if (convErr || !sbConv?.id) {
+          if (!convErr && selectedRecipientRef.current?.id === recipientId) {
+            try {
+              const key = `${LOCAL_DM_KEY_PREFIX}${[activeUser.id, recipientId].sort().join('_')}`;
+              const raw = localStorage.getItem(key);
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                  setMessages(parsed);
+                  return;
+                }
+              }
+            } catch {}
+            setMessages([]);
+          }
+          return;
+        }
+
+        const { data: sbMsgs, error } = await sb
+          .from('direct_messages')
+          .select('*')
+          .eq('conversation_id', sbConv.id)
+          .order('created_at', { ascending: true })
+          .limit(200);
+
+        if (!error && Array.isArray(sbMsgs)) {
+          const normalized: DirectMessage[] = sbMsgs.map((m: any) => ({
+            id: m.id,
+            conversation_id: m.conversation_id,
+            sender_id: m.sender_id,
+            content: m.content || '',
+            ...(m.attachment ? { attachment: m.attachment } : {}),
+            is_read: Boolean(m.is_read),
+            ...(m.read_at ? { read_at: m.read_at } : {}),
+            created_at: m.created_at || new Date().toISOString(),
+          }));
+
+          const hasUnreadFromOther = normalized.some(
+            (m) => m.sender_id === recipientId && !m.is_read
+          );
+          if (hasUnreadFromOther) {
+            const readIso = new Date().toISOString();
+            Promise.resolve(
+              sb.from('direct_messages')
+                .update({ is_read: true, read_at: readIso })
+                .eq('conversation_id', sbConv.id)
+                .eq('sender_id', recipientId)
+                .eq('is_read', false)
+            )
+              .then(() => {
+                broadcastRealtimeEvent('dm:read', {
+                  conversationId: sbConv.id,
+                  readerId: activeUser.id,
+                });
+              })
+              .catch(() => {});
+          }
+
           setMessages((prev) => {
             if (selectedRecipientRef.current?.id !== recipientId) return prev;
             const byId = new Map<string, DirectMessage>();
-            for (const m of serverMsgs) byId.set(m.id, m);
-            // Keep any fresher real-time WS messages belonging to this same conversation
+            for (const m of normalized) byId.set(m.id, m);
             for (const m of prev) {
-              if (!byId.has(m.id) && (!serverConvId || m.conversation_id === serverConvId)) {
+              if (!byId.has(m.id) && m.conversation_id === sbConv.id) {
                 byId.set(m.id, m);
               }
             }
@@ -476,7 +785,9 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
           });
           setConversations((prev) =>
             prev.map((c) =>
-              c.other_participant?.id === recipientId ? { ...c, unread_count: 0 } : c
+              c.id === sbConv.id || c.other_participant?.id === recipientId
+                ? { ...c, unread_count: 0 }
+                : c
             )
           );
           return;
@@ -484,7 +795,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       }
     } catch {}
 
-    // Fallback to local thread cache if offline
+    // Offline cache fallback
     try {
       const key = `${LOCAL_DM_KEY_PREFIX}${[activeUser.id, recipientId].sort().join('_')}`;
       const raw = localStorage.getItem(key);
@@ -534,11 +845,29 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         return next;
       });
 
-      // Acknowledge read status immediately back to server & sender when chat is open & visible
+      // Acknowledge read status immediately when chat is open & visible (Node or Cloudflare Supabase)
       if (incomingMsg.sender_id !== me.id && isFocusedOnThread) {
-        fetch(`/api/messages/${otherId}`, {
-          headers: buildAuthHeaders(false),
-        }).catch(() => {});
+        if (!wsUnavailableOnHostRef.current) {
+          fetch(`/api/messages/${otherId}`, {
+            headers: buildAuthHeaders(false),
+          }).catch(() => {});
+        } else {
+          const sb = getSupabaseClient();
+          if (sb && incomingMsg.conversation_id) {
+            Promise.resolve(
+              sb.from('direct_messages')
+                .update({ is_read: true, read_at: new Date().toISOString() })
+                .eq('id', incomingMsg.id)
+            )
+              .then(() => {
+                broadcastRealtimeEvent('dm:read', {
+                  conversationId: incomingMsg.conversation_id,
+                  readerId: me.id,
+                });
+              })
+              .catch(() => {});
+          }
+        }
       }
     }
 
@@ -643,7 +972,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     if (selectedRoomIdRef.current) {
       fetchRoomMessages(selectedRoomIdRef.current);
     }
-    if (authTokenRef.current && currentUserRef.current) {
+    if (currentUserRef.current) {
       fetchConversations();
       if (selectedRecipientRef.current) {
         fetchMessagesForRecipient(selectedRecipientRef.current.id);
@@ -651,13 +980,30 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     }
   };
 
-  // Persistent Real-Time WebSocket Engine (/ws/community) + Reconnect Resync
+  // Persistent Real-Time WebSocket Engine (/ws/community when hosted on Node server)
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || wsUnavailableOnHostRef.current) return;
     let disposed = false;
     let pingTimer: number | null = null;
 
-    const connectWebSocket = () => {
+    const connectWebSocket = async () => {
+      if (disposed || wsUnavailableOnHostRef.current) return;
+
+      // Probe once whether Express backend API exists; on Cloudflare Pages static hosting, skip WS retries cleanly
+      if (!hasEverOpenedWsRef.current) {
+        try {
+          const probe = await fetch('/api/community/rooms/summary');
+          const probeCt = probe.headers.get('content-type') || '';
+          if (!probeCt.includes('application/json')) {
+            wsUnavailableOnHostRef.current = true;
+            syncTransportStatus();
+            return;
+          }
+        } catch {
+          // Proceed to WS attempt
+        }
+      }
+
       if (disposed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const params = new URLSearchParams();
@@ -666,14 +1012,16 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       if (currentUser?.email) params.set('email', currentUser.email);
 
       const wsUrl = `${protocol}//${window.location.host}/ws/community?${params.toString()}`;
-      setWsStatus(reconnectAttemptRef.current > 0 ? 'reconnecting' : 'connecting');
+      if (!supabaseSubscribedRef.current) {
+        setWsStatus(reconnectAttemptRef.current > 0 ? 'reconnecting' : 'connecting');
+      }
 
       let ws: WebSocket;
       try {
         ws = new WebSocket(wsUrl);
         wsRef.current = ws;
       } catch {
-        setWsStatus('reconnecting');
+        syncTransportStatus();
         return;
       }
 
@@ -682,8 +1030,10 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
           ws.close();
           return;
         }
+        hasEverOpenedWsRef.current = true;
+        wsConnectedRef.current = true;
         reconnectAttemptRef.current = 0;
-        setWsStatus('live');
+        syncTransportStatus();
 
         if (authToken && currentUser?.id) {
           try {
@@ -716,7 +1066,8 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
           if (!data?.type) return;
 
           if (data.type === 'ws:ready') {
-            setWsStatus('live');
+            wsConnectedRef.current = true;
+            syncTransportStatus();
             resyncAllCommunityState();
             return;
           }
@@ -796,6 +1147,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       };
 
       ws.onclose = () => {
+        wsConnectedRef.current = false;
         if (pingTimer) {
           window.clearInterval(pingTimer);
           pingTimer = null;
@@ -803,7 +1155,13 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         if (wsRef.current === ws) wsRef.current = null;
         if (disposed) return;
 
-        setWsStatus('reconnecting');
+        if (!hasEverOpenedWsRef.current && reconnectAttemptRef.current >= 1) {
+          wsUnavailableOnHostRef.current = true;
+          syncTransportStatus();
+          return;
+        }
+
+        syncTransportStatus();
         const delayMs = Math.min(10000, 1000 * Math.pow(2, reconnectAttemptRef.current));
         reconnectAttemptRef.current += 1;
         if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
@@ -811,7 +1169,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       };
 
       ws.onerror = () => {
-        // onclose handles reconnect cleanly
+        // onclose handles fallback & reconnect cleanly
       };
     };
 
@@ -819,6 +1177,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
 
     return () => {
       disposed = true;
+      wsConnectedRef.current = false;
       if (pingTimer) window.clearInterval(pingTimer);
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) {
@@ -830,7 +1189,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     };
   }, [currentUser?.id, currentUser?.email, authToken]);
 
-  // Dual-Layer Supabase Realtime Backup (for static hosting without Node WebSocket server)
+  // Primary Cloudflare Real-Time Engine (Supabase Realtime Broadcast + Postgres Changes)
   useEffect(() => {
     const sb = getSupabaseClient();
     if (!sb) return;
@@ -838,23 +1197,82 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
 
     try {
       channel = sb
-        .channel(`kingdom-community-realtime-${currentUser?.id || 'guest'}`)
+        .channel('kingdom-community-realtime-global', {
+          config: { broadcast: { self: false } },
+        })
+        .on('broadcast', { event: 'dm:message' }, ({ payload }: any) => {
+          const me = currentUserRef.current;
+          const msg = payload?.message as DirectMessage | undefined;
+          const conv = payload?.conversation as Partial<Conversation> | undefined;
+          if (!me || !msg?.id) return;
+          const involvesMe =
+            payload?.recipientId === me.id ||
+            msg.sender_id === me.id ||
+            conv?.participant_one_id === me.id ||
+            conv?.participant_two_id === me.id;
+          if (!involvesMe) return;
+          applyIncomingDirectMessage(msg, conv || null, payload?.sender || null);
+        })
+        .on('broadcast', { event: 'dm:read' }, ({ payload }: any) => {
+          if (!payload?.conversationId || payload?.readerId === currentUserRef.current?.id) return;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.conversation_id === payload.conversationId &&
+              m.sender_id === currentUserRef.current?.id &&
+              !m.is_read
+                ? { ...m, is_read: true, read_at: new Date().toISOString() }
+                : m
+            )
+          );
+        })
+        .on('broadcast', { event: 'room:message' }, ({ payload }: any) => {
+          if (payload?.roomId && payload?.message) {
+            applyIncomingRoomMessage(
+              payload.roomId as FellowshipRoomId,
+              payload.message as FellowshipRoomMessage
+            );
+          }
+        })
+        .on('broadcast', { event: 'room:amen' }, ({ payload }: any) => {
+          if (payload?.roomId && payload?.message && selectedRoomIdRef.current === payload.roomId) {
+            setRoomMessages((prev) =>
+              prev.map((m) => (m.id === payload.message.id ? payload.message : m))
+            );
+          }
+        })
         .on(
           'postgres_changes',
           { event: 'INSERT', schema: 'public', table: 'direct_messages' },
-          (payload: any) => {
+          async (payload: any) => {
             const row = payload?.new;
             const me = currentUserRef.current;
             if (!row?.id || !me) return;
 
-            const matchedConv = conversationsRef.current.find(
+            let matchedConv: Partial<Conversation> | undefined = conversationsRef.current.find(
               (c) => c.id === row.conversation_id
             );
             const activeRecip = selectedRecipientRef.current;
-            const involvesMe =
+            let involvesMe =
               row.sender_id === me.id ||
               Boolean(matchedConv) ||
               (activeRecip && row.sender_id === activeRecip.id);
+
+            if (!involvesMe && row.conversation_id) {
+              try {
+                const { data: sbConv } = await sb
+                  .from('conversations')
+                  .select('*')
+                  .eq('id', row.conversation_id)
+                  .maybeSingle();
+                if (
+                  sbConv &&
+                  (sbConv.participant_one_id === me.id || sbConv.participant_two_id === me.id)
+                ) {
+                  matchedConv = sbConv;
+                  involvesMe = true;
+                }
+              } catch {}
+            }
             if (!involvesMe) return;
 
             const incomingMsg: DirectMessage = {
@@ -867,8 +1285,23 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
               created_at: row.created_at || new Date().toISOString(),
             };
             applyIncomingDirectMessage(incomingMsg, matchedConv || null, null);
-            if (!matchedConv) {
-              fetchConversations();
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'direct_messages' },
+          (payload: any) => {
+            const row = payload?.new;
+            const me = currentUserRef.current;
+            if (!row?.id || !me || !row.is_read) return;
+            if (row.sender_id === me.id) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === row.id
+                    ? { ...m, is_read: true, read_at: row.read_at || new Date().toISOString() }
+                    : m
+                )
+              );
             }
           }
         )
@@ -893,12 +1326,44 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
             applyIncomingRoomMessage(row.room_id as FellowshipRoomId, incomingMsg);
           }
         )
-        .subscribe();
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'fellowship_room_messages' },
+          (payload: any) => {
+            const row = payload?.new;
+            if (!row?.id || !row?.room_id) return;
+            if (selectedRoomIdRef.current === row.room_id) {
+              setRoomMessages((prev) =>
+                prev.map((m) =>
+                  m.id === row.id
+                    ? {
+                        ...m,
+                        amen_user_ids: Array.isArray(row.amen_user_ids) ? row.amen_user_ids : m.amen_user_ids,
+                      }
+                    : m
+                )
+              );
+            }
+          }
+        )
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            supabaseSubscribedRef.current = true;
+            syncTransportStatus();
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            supabaseSubscribedRef.current = false;
+            syncTransportStatus();
+          }
+        });
+
+      supabaseChannelRef.current = channel;
     } catch {
       // Ignore if Realtime is unavailable
     }
 
     return () => {
+      supabaseSubscribedRef.current = false;
+      supabaseChannelRef.current = null;
       if (channel) {
         try {
           sb.removeChannel(channel);
@@ -911,7 +1376,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
   useEffect(() => {
     resyncAllCommunityState();
 
-    const safetyPollMs = isDataSaverActive ? 25000 : 15000;
+    const safetyPollMs = isDataSaverActive ? 20000 : 8000;
     const interval = window.setInterval(() => {
       if (document.hidden) return;
       resyncAllCommunityState();
@@ -1062,11 +1527,25 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
 
   // Open Private Chat from ANY tab (Directory, Feed, Rooms, Prayer Wall, New Chat Picker)
   const openDirectChat = (member: UserProfile) => {
-    if (!currentUser || !authToken) {
+    if (!currentUser) {
       onRequireAuth();
       return;
     }
     if (member.id === currentUser.id) return;
+    if (selectedRecipientRef.current?.id !== member.id) {
+      try {
+        const key = `${LOCAL_DM_KEY_PREFIX}${[currentUser.id, member.id].sort().join('_')}`;
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          setMessages(Array.isArray(parsed) ? parsed : []);
+        } else {
+          setMessages([]);
+        }
+      } catch {
+        setMessages([]);
+      }
+    }
     setSelectedRecipient(member);
     setShowNewChatPicker(false);
     setActiveSubTab('messages');
@@ -1114,7 +1593,11 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       ? normalizeOutgoingAttachment(draftDmAttachment)
       : undefined;
 
-    if (!currentUser || !authToken || !selectedRecipient || (!textToSend.trim() && !outgoingAttachment)) return;
+    if (!currentUser) {
+      onRequireAuth();
+      return;
+    }
+    if (!selectedRecipient || (!textToSend.trim() && !outgoingAttachment)) return;
     if (blockedIds.includes(selectedRecipient.id)) {
       showNotice('Unblock this member first to send a private message.');
       return;
@@ -1124,48 +1607,224 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     const targetRecipient = selectedRecipient;
     setSendingMsg(true);
     try {
-      const res = await fetch(`/api/messages/${targetRecipient.id}`, {
-        method: 'POST',
-        headers: buildAuthHeaders(true),
-        body: JSON.stringify({
-          content,
-          ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
-        }),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data.message) {
-          applyIncomingDirectMessage(
-            data.message as DirectMessage,
-            data.conversation || null,
-            targetRecipient
-          );
-          setMessageInput('');
-          setDraftDmAttachment({});
-          setShowDmAttachmentTray(false);
-          return;
-        }
-      } else if (ct.includes('application/json')) {
-        const errData = await res.json().catch(() => null);
-        if (errData?.error) {
-          showNotice(errData.error);
-          if (res.status === 401) onRequireAuth();
+      if (!wsUnavailableOnHostRef.current) {
+        try {
+          const res = await fetch(`/api/messages/${targetRecipient.id}`, {
+            method: 'POST',
+            headers: buildAuthHeaders(true),
+            body: JSON.stringify({
+              content,
+              ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
+            }),
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (res.ok && ct.includes('application/json')) {
+            const data = await res.json();
+            if (data.message) {
+              applyIncomingDirectMessage(
+                data.message as DirectMessage,
+                data.conversation || null,
+                targetRecipient
+              );
+              setMessageInput('');
+              setDraftDmAttachment({});
+              setShowDmAttachmentTray(false);
+              return;
+            }
+          } else if (ct.includes('application/json')) {
+            const errData = await res.json().catch(() => null);
+            if (errData?.error) {
+              showNotice(errData.error);
+              if (res.status === 401) onRequireAuth();
+              return;
+            }
+          }
+        } catch {}
+      }
+
+      // Cloudflare Pages / static Supabase cloud persistence + Realtime broadcast
+      const nowIso = new Date().toISOString();
+      const previewText =
+        content ||
+        (outgoingAttachment?.event_title
+          ? `Event: ${outgoingAttachment.event_title}`
+          : 'Attached an event flyer');
+      const sb = getSupabaseClient();
+      let convId = `conv-${[currentUser.id, targetRecipient.id].sort().join('_')}`;
+      let convObj: Conversation | null = null;
+      const msgId = crypto.randomUUID ? crypto.randomUUID() : `dm-${Date.now()}`;
+      let persistedContent = content;
+
+      if (sb) {
+        try {
+          const senderSbId = await ensureSupabaseProfileExists(sb, currentUser);
+          const recipSbId = await ensureSupabaseProfileExists(sb, targetRecipient);
+
+          const { data: existingRows } = await sb
+            .from('conversations')
+            .select('*')
+            .or(
+              `and(participant_one_id.eq.${senderSbId},participant_two_id.eq.${recipSbId}),and(participant_one_id.eq.${recipSbId},participant_two_id.eq.${senderSbId})`
+            )
+            .order('last_message_at', { ascending: false })
+            .limit(1);
+
+          const existingConv = Array.isArray(existingRows) ? existingRows[0] : null;
+          if (existingConv?.id) {
+            convId = existingConv.id;
+            convObj = {
+              id: existingConv.id,
+              participant_one_id: existingConv.participant_one_id,
+              participant_two_id: existingConv.participant_two_id,
+              last_message_text: previewText,
+              last_message_at: nowIso,
+              unread_count: 0,
+            };
+            await sb
+              .from('conversations')
+              .update({ last_message_text: previewText, last_message_at: nowIso })
+              .eq('id', convId);
+          } else {
+            const newConvId = crypto.randomUUID ? crypto.randomUUID() : convId;
+            convId = newConvId;
+            convObj = {
+              id: newConvId,
+              participant_one_id: senderSbId,
+              participant_two_id: recipSbId,
+              last_message_text: previewText,
+              last_message_at: nowIso,
+              unread_count: 0,
+            };
+            const { error: convInsertErr } = await sb.from('conversations').insert([
+              {
+                id: newConvId,
+                participant_one_id: senderSbId,
+                participant_two_id: recipSbId,
+                last_message_text: previewText,
+                last_message_at: nowIso,
+                created_at: nowIso,
+              },
+            ]);
+            if (convInsertErr) {
+              const { data: racedRows } = await sb
+                .from('conversations')
+                .select('*')
+                .or(
+                  `and(participant_one_id.eq.${senderSbId},participant_two_id.eq.${recipSbId}),and(participant_one_id.eq.${recipSbId},participant_two_id.eq.${senderSbId})`
+                )
+                .order('last_message_at', { ascending: false })
+                .limit(1);
+              if (racedRows?.[0]?.id) {
+                convId = racedRows[0].id;
+                convObj = {
+                  id: racedRows[0].id,
+                  participant_one_id: racedRows[0].participant_one_id,
+                  participant_two_id: racedRows[0].participant_two_id,
+                  last_message_text: previewText,
+                  last_message_at: nowIso,
+                  unread_count: 0,
+                };
+                await sb
+                  .from('conversations')
+                  .update({ last_message_text: previewText, last_message_at: nowIso })
+                  .eq('id', convId);
+              } else {
+                console.error('Supabase conversation insert error:', convInsertErr);
+                showNotice('Unable to start chat conversation. Please try again.');
+                return;
+              }
+            }
+          }
+
+          const coreDmRow = {
+            id: msgId,
+            conversation_id: convId,
+            sender_id: senderSbId,
+            content,
+            is_read: false,
+            created_at: nowIso,
+          };
+
+          let dmResult = await sb
+            .from('direct_messages')
+            .insert([
+              outgoingAttachment ? { ...coreDmRow, attachment: outgoingAttachment } : coreDmRow,
+            ]);
+
+          if (
+            dmResult.error &&
+            outgoingAttachment &&
+            (dmResult.error.code === 'PGRST204' ||
+              String(dmResult.error.message || '').includes('attachment'))
+          ) {
+            persistedContent = [
+              content,
+              `[Event Flyer: ${outgoingAttachment.event_title || 'Event'}${outgoingAttachment.event_date ? ` · ${outgoingAttachment.event_date}` : ''}${outgoingAttachment.event_location ? ` · ${outgoingAttachment.event_location}` : ''}]`,
+            ]
+              .filter(Boolean)
+              .join('\n');
+            dmResult = await sb
+              .from('direct_messages')
+              .insert([{ ...coreDmRow, content: persistedContent }]);
+          }
+
+          if (dmResult.error) {
+            console.error('Supabase direct_messages insert error:', dmResult.error);
+            showNotice('Could not deliver private message. Please try again.');
+            return;
+          }
+
+          try {
+            const coreCommRow = {
+              id: msgId,
+              message_scope: 'direct',
+              conversation_id: convId,
+              sender_id: senderSbId,
+              sender_full_name: currentUser.full_name,
+              sender_username: currentUser.username,
+              sender_location: currentUser.location || 'Nigeria',
+              recipient_id: recipSbId,
+              content: persistedContent,
+              is_read: false,
+              created_at: nowIso,
+            };
+            await sb
+              .from('community_messages')
+              .insert([
+                outgoingAttachment ? { ...coreCommRow, attachment: outgoingAttachment } : coreCommRow,
+              ]);
+          } catch {}
+        } catch (err) {
+          console.error('Cloud DM send error:', err);
+          showNotice('Could not send private message right now.');
           return;
         }
       }
 
-      // Offline / static fallback persistence
-      const localMsg: DirectMessage = {
-        id: crypto.randomUUID ? crypto.randomUUID() : `dm-${Date.now()}`,
-        conversation_id: `conv-${[currentUser.id, targetRecipient.id].sort().join('_')}`,
+      const cloudMsg: DirectMessage = {
+        id: msgId,
+        conversation_id: convId,
         sender_id: currentUser.id,
-        content,
+        content: persistedContent,
         ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
         is_read: false,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
       };
-      applyIncomingDirectMessage(localMsg, null, targetRecipient);
+
+      broadcastRealtimeEvent('dm:message', {
+        message: cloudMsg,
+        conversation: convObj || {
+          id: convId,
+          participant_one_id: currentUser.id,
+          participant_two_id: targetRecipient.id,
+          last_message_text: previewText,
+          last_message_at: nowIso,
+        },
+        sender: currentUser,
+        recipientId: targetRecipient.id,
+      });
+
+      applyIncomingDirectMessage(cloudMsg, convObj, targetRecipient);
       setMessageInput('');
       setDraftDmAttachment({});
       setShowDmAttachmentTray(false);
@@ -1186,7 +1845,7 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       : undefined;
 
     if (!selectedRoomId || (!textToSend.trim() && !outgoingAttachment)) return;
-    if (!currentUser || !authToken) {
+    if (!currentUser) {
       onRequireAuth();
       return;
     }
@@ -1194,38 +1853,117 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
     const content = textToSend.trim();
     setSendingRoomMsg(true);
     try {
-      const res = await fetch(`/api/community/rooms/${roomId}/messages`, {
-        method: 'POST',
-        headers: buildAuthHeaders(true),
-        body: JSON.stringify({
-          content,
-          ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
-        }),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data.message) {
-          applyIncomingRoomMessage(roomId, data.message as FellowshipRoomMessage);
-          setRoomMessageInput('');
-          setDraftRoomAttachment({});
-          setShowRoomAttachmentTray(false);
-          return;
-        }
+      if (!wsUnavailableOnHostRef.current) {
+        try {
+          const res = await fetch(`/api/community/rooms/${roomId}/messages`, {
+            method: 'POST',
+            headers: buildAuthHeaders(true),
+            body: JSON.stringify({
+              content,
+              ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
+            }),
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (res.ok && ct.includes('application/json')) {
+            const data = await res.json();
+            if (data.message) {
+              applyIncomingRoomMessage(roomId, data.message as FellowshipRoomMessage);
+              setRoomMessageInput('');
+              setDraftRoomAttachment({});
+              setShowRoomAttachmentTray(false);
+              return;
+            }
+          } else if (ct.includes('application/json')) {
+            const errData = await res.json().catch(() => null);
+            if (errData?.error) {
+              showNotice(errData.error);
+              if (res.status === 401) onRequireAuth();
+              return;
+            }
+          }
+        } catch {}
       }
-      const localMsg: FellowshipRoomMessage = {
-        id: `rmsg-${Date.now()}`,
+
+      // Cloudflare Pages / static Supabase cloud persistence + Realtime broadcast
+      const nowIso = new Date().toISOString();
+      let persistedRoomContent = content;
+      const msgId = crypto.randomUUID ? crypto.randomUUID() : `rmsg-${Date.now()}`;
+
+      const sb = getSupabaseClient();
+      if (sb) {
+        try {
+          const senderSbId = await ensureSupabaseProfileExists(sb, currentUser);
+          const coreRoomRow = {
+            id: msgId,
+            room_id: roomId,
+            user_id: senderSbId,
+            user_full_name: currentUser.full_name,
+            user_username: currentUser.username,
+            user_location: currentUser.location || 'Nigeria',
+            content,
+            amen_user_ids: [] as string[],
+            created_at: nowIso,
+          };
+          let roomRes = await sb
+            .from('fellowship_room_messages')
+            .insert([
+              outgoingAttachment ? { ...coreRoomRow, attachment: outgoingAttachment } : coreRoomRow,
+            ]);
+          if (
+            roomRes.error &&
+            outgoingAttachment &&
+            (roomRes.error.code === 'PGRST204' ||
+              String(roomRes.error.message || '').includes('attachment'))
+          ) {
+            persistedRoomContent = [
+              content,
+              `[Event Flyer: ${outgoingAttachment.event_title || 'Event'}${outgoingAttachment.event_date ? ` · ${outgoingAttachment.event_date}` : ''}${outgoingAttachment.event_location ? ` · ${outgoingAttachment.event_location}` : ''}]`,
+            ]
+              .filter(Boolean)
+              .join('\n');
+            roomRes = await sb
+              .from('fellowship_room_messages')
+              .insert([{ ...coreRoomRow, content: persistedRoomContent }]);
+          }
+
+          try {
+            const coreCommRow = {
+              id: msgId,
+              message_scope: 'room',
+              room_id: roomId,
+              sender_id: senderSbId,
+              sender_full_name: currentUser.full_name,
+              sender_username: currentUser.username,
+              sender_location: currentUser.location || 'Nigeria',
+              content: persistedRoomContent,
+              amen_user_ids: [] as string[],
+              is_read: true,
+              created_at: nowIso,
+            };
+            await sb
+              .from('community_messages')
+              .insert([
+                outgoingAttachment ? { ...coreCommRow, attachment: outgoingAttachment } : coreCommRow,
+              ]);
+          } catch {}
+        } catch {}
+      }
+
+      const cloudMsg: FellowshipRoomMessage = {
+        id: msgId,
         room_id: roomId,
         user_id: currentUser.id,
         user_full_name: currentUser.full_name,
         user_username: currentUser.username,
         user_location: currentUser.location || 'Nigeria',
-        content,
+        content: persistedRoomContent,
         ...(outgoingAttachment ? { attachment: outgoingAttachment } : {}),
         amen_user_ids: [],
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
       };
-      applyIncomingRoomMessage(roomId, localMsg);
+
+      broadcastRealtimeEvent('room:message', { roomId, message: cloudMsg });
+      applyIncomingRoomMessage(roomId, cloudMsg);
       setRoomMessageInput('');
       setDraftRoomAttachment({});
       setShowRoomAttachmentTray(false);
@@ -1240,8 +1978,9 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
       return;
     }
     if (!selectedRoomId) return;
+    const roomId = selectedRoomId;
     try {
-      const res = await fetch(`/api/community/rooms/${selectedRoomId}/messages/${msgId}/amen`, {
+      const res = await fetch(`/api/community/rooms/${roomId}/messages/${msgId}/amen`, {
         method: 'POST',
         headers: buildAuthHeaders(false),
       });
@@ -1254,18 +1993,33 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
         }
       }
     } catch {}
+
+    let updatedMessage: FellowshipRoomMessage | null = null;
     setRoomMessages((prev) =>
       prev.map((m) => {
         if (m.id !== msgId) return m;
         const has = m.amen_user_ids.includes(currentUser.id);
-        return {
+        updatedMessage = {
           ...m,
           amen_user_ids: has
             ? m.amen_user_ids.filter((id) => id !== currentUser.id)
             : [...m.amen_user_ids, currentUser.id],
         };
+        return updatedMessage;
       })
     );
+
+    if (updatedMessage) {
+      const sb = getSupabaseClient();
+      if (sb) {
+        Promise.resolve(
+          sb.from('fellowship_room_messages')
+            .update({ amen_user_ids: (updatedMessage as FellowshipRoomMessage).amen_user_ids })
+            .eq('id', msgId)
+        ).catch(() => {});
+      }
+      broadcastRealtimeEvent('room:amen', { roomId, message: updatedMessage });
+    }
   };
 
   const filteredMembers = members
@@ -1812,11 +2566,10 @@ export const CommunityAndMessagingView: React.FC<CommunityAndMessagingViewProps>
                         key={conv.id}
                         type="button"
                         onClick={() => {
-                          setSelectedRecipient(other);
                           setConversations((prev) =>
                             prev.map((c) => (c.id === conv.id ? { ...c, unread_count: 0 } : c))
                           );
-                          fetchMessagesForRecipient(other.id);
+                          openDirectChat(other);
                         }}
                         className={`w-full text-left p-3.5 rounded-lg border transition-colors flex items-start justify-between gap-3 ${
                           isSelected

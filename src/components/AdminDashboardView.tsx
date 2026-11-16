@@ -2273,31 +2273,31 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
               <div className="p-3.5 rounded-xl bg-zinc-900/80 border border-emerald-500/30 flex flex-col justify-between gap-1">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-zinc-300 font-medium">Core Tables (15/17 Active)</span>
+                  <span className="text-zinc-300 font-medium">Core Tables Active (17/19)</span>
                   <Check className="w-4 h-4 text-emerald-400" />
                 </div>
                 <p className="text-[11px] text-zinc-400">
-                  Profiles, categories, channels, videos, watch history, saved videos, comments, direct messages, and prayers are provisioned.
+                  Profiles, categories, channels, videos, watch history, saved videos, comments, conversations, direct messages, reminders, and discovery cache are active.
                 </p>
               </div>
 
               <div className="p-3.5 rounded-xl bg-zinc-900/80 border border-amber-500/30 flex flex-col justify-between gap-1">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-amber-300 font-medium">New Feature Tables (2/17 Pending)</span>
+                  <span className="text-amber-300 font-medium">Community Schema Additions (2 Tables + Column)</span>
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
                 </div>
                 <p className="text-[11px] text-zinc-400">
-                  <code className="text-amber-300">broadcast_reminders</code> and <code className="text-amber-300">discovered_videos</code> need the latest SQL update run in your Supabase SQL Editor.
+                  Re-run this idempotent script in Supabase SQL Editor to add <code className="text-amber-300">fellowship_room_messages</code>, <code className="text-amber-300">community_messages</code>, and event flyers (<code className="text-amber-300">attachment</code>) on direct messages.
                 </p>
               </div>
 
               <div className="p-3.5 rounded-xl bg-zinc-900/80 border border-blue-500/30 flex flex-col justify-between gap-1">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-blue-300 font-medium">Row Level Security (RLS)</span>
+                  <span className="text-blue-300 font-medium">Row Level Security &amp; Realtime</span>
                   <span className="text-[10px] font-mono text-blue-400">Included in Script</span>
                 </div>
                 <p className="text-[11px] text-zinc-400">
-                  Section 15 of the script includes idempotent RLS policies enabling public read and user-authenticated writes for Cloudflare Pages.
+                  Sections 13 &amp; 15 configure Supabase Realtime publications and RLS policies for live multi-user Cloudflare Pages sync.
                 </p>
               </div>
             </div>

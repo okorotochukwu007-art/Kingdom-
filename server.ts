@@ -1226,37 +1226,60 @@ app.post('/api/community/rooms/:roomId/messages', async (req: Request, res: Resp
   store.saveToDisk();
 
   if (store.supabase && store.supabaseConnected) {
-    Promise.resolve(
-      store.supabase.from('fellowship_room_messages').upsert({
-        id: msg.id,
-        room_id: msg.room_id,
-        user_id: msg.user_id,
-        user_full_name: msg.user_full_name,
-        user_username: msg.user_username,
-        user_location: msg.user_location,
-        content: msg.content,
-        attachment: msg.attachment || null,
-        amen_user_ids: msg.amen_user_ids,
-        created_at: msg.created_at,
-      })
-    ).catch(() => {});
+    (async () => {
+      try {
+        const coreRoomPayload: Record<string, any> = {
+          id: msg.id,
+          room_id: msg.room_id,
+          user_id: msg.user_id,
+          user_full_name: msg.user_full_name,
+          user_username: msg.user_username,
+          user_location: msg.user_location,
+          content: msg.content,
+          amen_user_ids: msg.amen_user_ids,
+          created_at: msg.created_at,
+        };
+        const { error: roomErr } = await store.supabase!.from('fellowship_room_messages').upsert(
+          msg.attachment ? { ...coreRoomPayload, attachment: msg.attachment } : coreRoomPayload
+        );
+        if (
+          roomErr &&
+          msg.attachment &&
+          (roomErr.code === 'PGRST204' || String(roomErr.message || '').includes('attachment'))
+        ) {
+          const fallbackContent = [
+            msg.content,
+            `[Event Flyer: ${msg.attachment.event_title || 'Event'}${msg.attachment.event_date ? ` · ${msg.attachment.event_date}` : ''}${msg.attachment.event_location ? ` · ${msg.attachment.event_location}` : ''}]`,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          await store.supabase!
+            .from('fellowship_room_messages')
+            .upsert({ ...coreRoomPayload, content: fallbackContent });
+        }
 
-    Promise.resolve(
-      store.supabase.from('community_messages').upsert({
-        id: msg.id,
-        message_scope: 'room',
-        room_id: msg.room_id,
-        sender_id: msg.user_id,
-        sender_full_name: msg.user_full_name,
-        sender_username: msg.user_username,
-        sender_location: msg.user_location,
-        content: msg.content,
-        attachment: msg.attachment || null,
-        amen_user_ids: msg.amen_user_ids,
-        is_read: true,
-        created_at: msg.created_at,
-      })
-    ).catch(() => {});
+        const coreCommunityPayload: Record<string, any> = {
+          id: msg.id,
+          message_scope: 'room',
+          room_id: msg.room_id,
+          sender_id: msg.user_id,
+          sender_full_name: msg.user_full_name,
+          sender_username: msg.user_username,
+          sender_location: msg.user_location,
+          content: msg.content,
+          amen_user_ids: msg.amen_user_ids,
+          is_read: true,
+          created_at: msg.created_at,
+        };
+        await store.supabase!.from('community_messages').upsert(
+          msg.attachment
+            ? { ...coreCommunityPayload, attachment: msg.attachment }
+            : coreCommunityPayload
+        );
+      } catch {
+        // Ignore transient Supabase write error; SQLite already persisted locally
+      }
+    })();
   }
 
   broadcastAllCommunity({
@@ -1636,13 +1659,15 @@ app.get('/api/messages/:otherUserId', async (req: Request, res: Response) => {
 
   if (!conv && store.supabase && store.supabaseConnected) {
     try {
-      const { data: sbConv } = await store.supabase
+      const { data: sbConvRows } = await store.supabase
         .from('conversations')
         .select('*')
         .or(
           `and(participant_one_id.eq.${user.id},participant_two_id.eq.${otherId}),and(participant_one_id.eq.${otherId},participant_two_id.eq.${user.id})`
         )
-        .maybeSingle();
+        .order('last_message_at', { ascending: false })
+        .limit(1);
+      const sbConv = Array.isArray(sbConvRows) ? sbConvRows[0] : null;
       if (sbConv?.id) {
         conv = {
           id: sbConv.id,
@@ -1815,45 +1840,89 @@ app.post('/api/messages/:otherUserId', async (req: Request, res: Response) => {
   store.saveToDisk();
 
   if (store.supabase && store.supabaseConnected) {
-    Promise.resolve(
-      store.supabase.from('conversations').upsert({
-        id: conv.id,
-        participant_one_id: conv.participant_one_id,
-        participant_two_id: conv.participant_two_id,
-        last_message_text: conv.last_message_text,
-        last_message_at: conv.last_message_at,
-        created_at: conv.last_message_at,
-      })
-    ).catch(() => {});
+    (async () => {
+      try {
+        let targetConvId = conv!.id;
+        const { error: convErr } = await store.supabase!.from('conversations').upsert({
+          id: targetConvId,
+          participant_one_id: conv!.participant_one_id,
+          participant_two_id: conv!.participant_two_id,
+          last_message_text: conv!.last_message_text,
+          last_message_at: conv!.last_message_at,
+          created_at: conv!.last_message_at,
+        });
+        if (convErr) {
+          const { data: existingRows } = await store.supabase!
+            .from('conversations')
+            .select('id')
+            .or(
+              `and(participant_one_id.eq.${user.id},participant_two_id.eq.${otherId}),and(participant_one_id.eq.${otherId},participant_two_id.eq.${user.id})`
+            )
+            .order('last_message_at', { ascending: false })
+            .limit(1);
+          if (existingRows?.[0]?.id) {
+            targetConvId = existingRows[0].id;
+            await store.supabase!
+              .from('conversations')
+              .update({
+                last_message_text: conv!.last_message_text,
+                last_message_at: conv!.last_message_at,
+              })
+              .eq('id', targetConvId);
+          }
+        }
 
-    Promise.resolve(
-      store.supabase.from('direct_messages').upsert({
-        id: message.id,
-        conversation_id: message.conversation_id,
-        sender_id: message.sender_id,
-        content: message.content,
-        attachment: message.attachment || null,
-        is_read: false,
-        created_at: message.created_at,
-      })
-    ).catch(() => {});
+        const coreDirectPayload: Record<string, any> = {
+          id: message.id,
+          conversation_id: targetConvId,
+          sender_id: message.sender_id,
+          content: message.content,
+          is_read: false,
+          created_at: message.created_at,
+        };
+        const { error: dmErr } = await store.supabase!.from('direct_messages').upsert(
+          message.attachment
+            ? { ...coreDirectPayload, attachment: message.attachment }
+            : coreDirectPayload
+        );
+        if (
+          dmErr &&
+          message.attachment &&
+          (dmErr.code === 'PGRST204' || String(dmErr.message || '').includes('attachment'))
+        ) {
+          const fallbackContent = [
+            message.content,
+            `[Event Flyer: ${message.attachment.event_title || 'Event'}${message.attachment.event_date ? ` · ${message.attachment.event_date}` : ''}${message.attachment.event_location ? ` · ${message.attachment.event_location}` : ''}]`,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          await store.supabase!
+            .from('direct_messages')
+            .upsert({ ...coreDirectPayload, content: fallbackContent });
+        }
 
-    Promise.resolve(
-      store.supabase.from('community_messages').upsert({
-        id: message.id,
-        message_scope: 'direct',
-        conversation_id: message.conversation_id,
-        sender_id: user.id,
-        sender_full_name: user.full_name,
-        sender_username: user.username,
-        sender_location: user.location || 'Nigeria',
-        recipient_id: otherId,
-        content: message.content,
-        attachment: message.attachment || null,
-        is_read: false,
-        created_at: message.created_at,
-      })
-    ).catch(() => {});
+        const coreCommPayload: Record<string, any> = {
+          id: message.id,
+          message_scope: 'direct',
+          conversation_id: targetConvId,
+          sender_id: user.id,
+          sender_full_name: user.full_name,
+          sender_username: user.username,
+          sender_location: user.location || 'Nigeria',
+          recipient_id: otherId,
+          content: message.content,
+          is_read: false,
+          created_at: message.created_at,
+        };
+        await store.supabase!.from('community_messages').upsert(
+          message.attachment
+            ? { ...coreCommPayload, attachment: message.attachment }
+            : coreCommPayload
+        );
+      } catch {
+        // Ignore transient Supabase write failure
+      }
+    })();
   }
 
   const { password_hash: _senderHash, ...safeSender } = user as UserProfile & {
