@@ -1117,7 +1117,7 @@ export const DiscoveredMinisterFullProfileView: React.FC<{
                 isSaved={savedVideoIds.includes(video.id)}
                 onToggleSave={onToggleSave || (() => {})}
               />
-              <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/80 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
+              <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/85 border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
                 KINGDOM+ Stream
               </div>
             </div>

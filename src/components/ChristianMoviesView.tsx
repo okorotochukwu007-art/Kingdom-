@@ -266,6 +266,10 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
   const currentSlide = heroSlides[heroIndex] || heroSlides[0] || null;
   const currentHero = currentSlide?.video || null;
   const currentHeroAlert = currentSlide?.alert || null;
+  const desktopBannerStart = Math.max(
+    0,
+    Math.min(heroIndex - 1, Math.max(0, heroSlides.length - 4))
+  );
 
   const filteredMovies = useMemo(() => {
     let list = [...allMovieVideos];
@@ -554,7 +558,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
 
           {/* Right 4 Columns: Trending & Newly Released Movies Lineup directly on the Banner */}
           {heroSlides.length > 0 && (
-            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/75 backdrop-blur-md border border-zinc-800/90 rounded-xl p-2.5 sm:p-3.5">
+            <div className="lg:col-span-4 min-w-0 w-full flex flex-col gap-1.5 bg-black/85 border border-zinc-800/90 rounded-xl p-2.5 sm:p-3.5">
               <div className="flex items-center justify-between gap-2 px-1 pb-1">
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-200">
                   <Flame className="w-3.5 h-3.5 text-amber-400" />
@@ -609,10 +613,12 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                 </div>
               </div>
 
-              <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar max-h-[290px] lg:overflow-y-auto">
+              <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar">
                 {heroSlides.map((slide, idx) => {
                   const cand = slide.video;
                   const alert = slide.alert;
+                  const hiddenOnDesktop =
+                    idx < desktopBannerStart || idx >= desktopBannerStart + 4;
                   return (
                     <button
                       key={cand.id}
@@ -622,6 +628,8 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                         setHeroIndex(idx);
                       }}
                       className={`min-w-[220px] sm:min-w-[250px] lg:min-w-0 lg:w-full text-left p-2 rounded-lg transition-colors flex items-center gap-2.5 shrink-0 ${
+                        hiddenOnDesktop ? 'lg:hidden' : ''
+                      } ${
                         idx === heroIndex
                           ? 'bg-amber-500/15 border border-amber-500/45'
                           : 'hover:bg-zinc-900/75 border border-transparent'
@@ -810,7 +818,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                       isSaved={savedVideoIds.includes(video.id)}
                       onToggleSave={onToggleSave}
                     />
-                    <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/80 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
+                    <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/85 border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
                       KINGDOM+ Discovery
                     </div>
                   </div>

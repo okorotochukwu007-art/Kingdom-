@@ -273,6 +273,45 @@ function computeProgramTiming(program: ScheduledProgram, nowMs: number) {
   };
 }
 
+const WatClockReadout: React.FC = React.memo(() => {
+  const [tickMs, setTickMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!document.hidden) {
+        setTickMs(Date.now());
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const watClock = getWatNowComponents(tickMs);
+  return (
+    <span className="text-xs font-mono tabular-nums text-zinc-300 font-semibold">
+      {watClock.formattedDay} · {watClock.formattedClock} WAT
+    </span>
+  );
+});
+
+const ProgramCountdownBadge: React.FC<{
+  program: ScheduledProgram;
+  prefix: string;
+}> = React.memo(({ program, prefix }) => {
+  const [tickMs, setTickMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!document.hidden) {
+        setTickMs(Date.now());
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const { countdownText } = computeProgramTiming(program, tickMs);
+  return (
+    <>
+      {prefix} {countdownText}
+    </>
+  );
+});
+
 function convertLiveStreamToKingdomVideo(
   item: RealTimeLiveStreamItem,
   channels: KingdomChannel[]
@@ -378,8 +417,10 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
+      if (!document.hidden) {
+        setNowMs(Date.now());
+      }
+    }, 15_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -686,7 +727,6 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
   }, [nowMs, programsWithTiming, reminderIds, advanceMinutes]);
 
   const nextScheduledProgram = programsWithTiming[0];
-  const watClock = getWatNowComponents(nowMs);
 
   const visibleSchedulePrograms = useMemo(() => {
     if (scheduleTab === 'all') return programsWithTiming;
@@ -888,9 +928,7 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
                 <Clock className="w-3 h-3" />
                 <span>NIGERIA / WEST AFRICA TIME (WAT) SCHEDULE</span>
               </span>
-              <span className="text-xs font-mono tabular-nums text-zinc-300 font-semibold">
-                {watClock.formattedDay} · {watClock.formattedClock} WAT
-              </span>
+              <WatClockReadout />
               {lastCheckedAt && (
                 <span className="text-[11px] text-zinc-500 hidden sm:inline">
                   · Real-time status verified
@@ -1124,6 +1162,8 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
                 <img
                   src={nextScheduledProgram.avatarUrl}
                   alt={nextScheduledProgram.minister}
+                  loading="lazy"
+                  decoding="async"
                   referrerPolicy="no-referrer"
                   className="w-11 h-11 sm:w-12 sm:h-12 rounded-full object-cover bg-zinc-800 border border-amber-500/40 shrink-0"
                 />
@@ -1147,9 +1187,14 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
                       : 'UP NEXT ON SCHEDULE'}
                   </span>
                   <span className="px-2 py-0.5 rounded bg-zinc-950 border border-zinc-700 text-xs font-mono tabular-nums text-amber-400 font-bold">
-                    {nextScheduledProgram.isActuallyLiveOnYouTube
-                      ? 'STREAMING LIVE'
-                      : `Starts in ${nextScheduledProgram.countdownText}`}
+                    {nextScheduledProgram.isActuallyLiveOnYouTube ? (
+                      'STREAMING LIVE'
+                    ) : (
+                      <ProgramCountdownBadge
+                        program={nextScheduledProgram}
+                        prefix="Starts in"
+                      />
+                    )}
                   </span>
                   <span className="text-[11px] text-zinc-400 hidden sm:inline">
                     · {nextScheduledProgram.scheduleLabel}
@@ -1256,7 +1301,11 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
                           : 'bg-zinc-800 text-zinc-300'
                       }`}
                     >
-                      {prog.isActuallyLiveOnYouTube ? '🔴 LIVE NOW' : `In ${prog.countdownText}`}
+                      {prog.isActuallyLiveOnYouTube ? (
+                        '🔴 LIVE NOW'
+                      ) : (
+                        <ProgramCountdownBadge program={prog} prefix="In" />
+                      )}
                     </span>
                   </div>
 
@@ -1265,6 +1314,8 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
                       <img
                         src={prog.avatarUrl}
                         alt={prog.minister}
+                        loading="lazy"
+                        decoding="async"
                         referrerPolicy="no-referrer"
                         className="w-8 h-8 rounded-full object-cover bg-zinc-800 shrink-0"
                       />

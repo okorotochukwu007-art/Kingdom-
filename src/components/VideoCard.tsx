@@ -65,7 +65,7 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
   return (
     <article
       onClick={() => onSelect(video)}
-      className="group cursor-pointer flex flex-col bg-[#121215] border border-zinc-800/80 rounded-2xl overflow-hidden transition-colors duration-150 hover:border-amber-500/40 active:scale-[0.99]"
+      className="video-card-perf group cursor-pointer flex flex-col bg-[#121215] border border-zinc-800/80 rounded-2xl overflow-hidden transition-colors duration-150 hover:border-amber-500/40"
     >
       {/* 16:9 Thumbnail Frame */}
       <div className="relative aspect-video w-full bg-zinc-900 overflow-hidden">
@@ -85,7 +85,7 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
                 setImgError(true);
               }
             }}
-            className="w-full h-full object-cover md:transition-transform md:duration-200 md:group-hover:scale-105"
+            className="w-full h-full object-cover md:transition-transform md:duration-200 md:group-hover:scale-[1.03]"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-zinc-900 via-zinc-950 to-amber-950/30 p-4 text-center">

@@ -891,11 +891,11 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full max-w-full overflow-x-clip bg-[#09090B] text-[#FAFAFA] flex flex-col">
+    <div className="min-h-screen bg-[#09090B] text-[#FAFAFA] flex flex-col">
       {/* ====================================================================
           TOP BAR CONTRACT (3 Zones separated by gap-8)
       ==================================================================== */}
-      <header className="sticky top-0 z-40 w-full bg-[#09090B]/95 md:backdrop-blur-md border-b border-zinc-800/80">
+      <header className="sticky top-0 z-40 w-full bg-[#09090B] border-b border-zinc-800/80">
         <div className="max-w-[1440px] w-full mx-auto flex items-center justify-between gap-2 sm:gap-8 px-3.5 sm:px-8 py-3 sm:py-4">
           {/* Zone 1: Single text element wordmark */}
           <a
