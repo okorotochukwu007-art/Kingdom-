@@ -100,16 +100,130 @@ const EIGHT_MAIN_CATEGORY_SLUGS = [
   'live-special-broadcasts',
 ] as const;
 
+const ROUTE_SEO_DESCRIPTORS: Record<string, { title: string; description: string }> = {
+  streaming: {
+    title: 'KingdomFlix (KINGDOM+) — Free Christian Movies & Gospel Songs',
+    description:
+      'Watch free Nigerian & global Christian movies, stream gospel songs, worship, live prayer broadcasts, and join fellowship on KingdomFlix (KINGDOM+).',
+  },
+  movies: {
+    title: 'Free Christian Movies & Faith Cinema — KingdomFlix',
+    description:
+      'Stream full-length Nigerian & global Christian movies, Mount Zion faith dramas, deliverance films, and Bible stories free on KingdomFlix.',
+  },
+  categories: {
+    title: 'Christian Categories, Gospel Music & Sermons — KingdomFlix',
+    description:
+      'Browse Christian movies, Nigerian gospel songs, worship & praise, sermons, marriage teachings, and live prayer broadcasts on KingdomFlix.',
+  },
+  'gospel-music': {
+    title: 'Stream Nigerian & Global Gospel Songs Free — KingdomFlix',
+    description:
+      'Listen to inspiring Nigerian & global gospel music, praise hits, gospel choirs, and spirit-filled worship songs free on KingdomFlix.',
+  },
+  'worship-praise': {
+    title: 'Christian Worship & Praise Music Sessions — KingdomFlix',
+    description:
+      'Enter deep worship with Nathaniel Bassey, Dunsin Oyekan, Mercy Chinwo, Moses Bliss, and global Christian praise sessions on KingdomFlix.',
+  },
+  'sermons-teachings': {
+    title: 'Christian Sermons & Bible Teachings — KingdomFlix',
+    description:
+      'Watch life-transforming sermons and Bible teachings from Apostle Joshua Selman, Pastor Jerry Eze, Bishop David Oyedepo & more on KingdomFlix.',
+  },
+  'live-special-broadcasts': {
+    title: 'Live Prayer Altars & Church Broadcasts — KingdomFlix',
+    description:
+      'Join NSPPD, Hallelujah Challenge, Covenant Hour of Prayer, and Sunday church live broadcasts with WAT countdown alerts on KingdomFlix.',
+  },
+  'prayer-spiritual-warfare': {
+    title: 'Christian Prayers & Spiritual Warfare — KingdomFlix',
+    description:
+      'Watch prophetic prayers, midnight altars, and spiritual warfare sessions from trusted Christian ministries on KingdomFlix.',
+  },
+  'marriage-relationships': {
+    title: 'Christian Marriage & Relationship Teachings — KingdomFlix',
+    description:
+      'Learn biblical wisdom on Christian marriage, courtship, singles, and godly family building on KingdomFlix.',
+  },
+  'christian-living': {
+    title: 'Christian Living, Faith & Purpose Teachings — KingdomFlix',
+    description:
+      'Grow daily in faith, spiritual maturity, godly character, and Christian purpose with curated teachings on KingdomFlix.',
+  },
+  'conferences-events': {
+    title: 'Christian Conferences, Crusades & Revivals — KingdomFlix',
+    description:
+      'Watch major Christian conferences, gospel crusades, youth camps, and special revival gatherings on KingdomFlix.',
+  },
+  ministers: {
+    title: 'Explore Christian Ministers & Gospel Artists — KingdomFlix',
+    description:
+      'Browse verified Nigerian & international Christian pastors, apostles, worship leaders, and gospel music artists on KingdomFlix.',
+  },
+  community: {
+    title: 'Christian Community, Prayer Wall & Fellowship — KingdomFlix',
+    description:
+      'Connect with believers worldwide, share testimonies, post prayer requests, and chat live in Christian fellowship rooms on KingdomFlix.',
+  },
+};
+
+function parseRouteFromLocation(): {
+  view: NavView;
+  categorySlug: string;
+  initialSearch: string;
+} {
+  if (typeof window === 'undefined') {
+    return { view: 'streaming', categorySlug: 'all', initialSearch: '' };
+  }
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  const params = new URLSearchParams(window.location.search);
+  const initialSearch = (params.get('q') || '').trim();
+
+  if (path === '/movies') {
+    return { view: 'movies', categorySlug: 'all', initialSearch };
+  }
+  if (path === '/ministers') {
+    return { view: 'ministers', categorySlug: 'all', initialSearch };
+  }
+  if (path === '/community') {
+    return { view: 'community', categorySlug: 'all', initialSearch };
+  }
+  if (path === '/categories') {
+    return { view: 'categories', categorySlug: 'all', initialSearch };
+  }
+  if (path.startsWith('/categories/')) {
+    const slug = decodeURIComponent(path.slice('/categories/'.length)).trim() || 'all';
+    return { view: 'categories', categorySlug: slug, initialSearch };
+  }
+  return { view: 'streaming', categorySlug: 'all', initialSearch };
+}
+
+function buildRoutePath(view: NavView, categorySlug = 'all'): string {
+  if (view === 'movies') return '/movies';
+  if (view === 'ministers') return '/ministers';
+  if (view === 'community') return '/community';
+  if (view === 'categories') {
+    return categorySlug && categorySlug !== 'all'
+      ? `/categories/${encodeURIComponent(categorySlug)}`
+      : '/categories';
+  }
+  return '/';
+}
+
 export default function App() {
+  const initialRoute = React.useMemo(() => parseRouteFromLocation(), []);
   const { isDataSaverActive, deviceSaveData, toggleQuickDataSaver } = useDataSaver();
   const [dataSaverToast, setDataSaverToast] = useState<string | null>(null);
   const dataSaverToastTimerRef = React.useRef<number | null>(null);
 
-  const [activeView, setActiveView] = useState<NavView>('streaming');
+  const [activeView, setActiveView] = useState<NavView>(initialRoute.view);
   const [rankingMode, setRankingMode] = useState<RankingMode>('rails');
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategorySlug, setSelectedCategorySlug] = useState<string>('all');
+  const [selectedCategorySlug, setSelectedCategorySlug] = useState<string>(
+    initialRoute.categorySlug
+  );
   const [visibleCategoryCount, setVisibleCategoryCount] = useState<number>(() =>
     getDataSaverStatus().isDataSaverActive ? 12 : 24
   );
@@ -156,9 +270,57 @@ export default function App() {
   const [pendingVideoToPlay, setPendingVideoToPlay] = useState<KingdomVideo | null>(null);
 
   // Intelligent Discovery Modal state across the entire app
-  const [isDiscoveryModalOpen, setIsDiscoveryModalOpen] = useState(false);
+  const [isDiscoveryModalOpen, setIsDiscoveryModalOpen] = useState(() =>
+    Boolean(initialRoute.initialSearch)
+  );
   const [discoveryInitialScope, setDiscoveryInitialScope] = useState<DiscoveryFilterScope>('all');
-  const [discoveryInitialQuery, setDiscoveryInitialQuery] = useState('');
+  const [discoveryInitialQuery, setDiscoveryInitialQuery] = useState(
+    () => initialRoute.initialSearch
+  );
+
+  // Sync browser Back/Forward history navigation & per-route SEO meta tags
+  useEffect(() => {
+    const onPopState = () => {
+      const parsed = parseRouteFromLocation();
+      setActiveView(parsed.view);
+      setSelectedCategorySlug(parsed.categorySlug);
+      if (parsed.initialSearch) {
+        setDiscoveryInitialQuery(parsed.initialSearch);
+        setIsDiscoveryModalOpen(true);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    const seoKey =
+      activeView === 'categories' && selectedCategorySlug !== 'all'
+        ? selectedCategorySlug
+        : activeView;
+    const seo = ROUTE_SEO_DESCRIPTORS[seoKey] || ROUTE_SEO_DESCRIPTORS.streaming;
+    document.title = seo.title;
+
+    const currentUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}${window.location.pathname}`
+        : 'https://www.kingdomflix.name.ng/';
+
+    const setMeta = (selector: string, content: string) => {
+      const el = document.querySelector(selector);
+      if (el) el.setAttribute('content', content);
+    };
+
+    setMeta('meta[name="description"]', seo.description);
+    setMeta('meta[property="og:title"]', seo.title);
+    setMeta('meta[property="og:description"]', seo.description);
+    setMeta('meta[property="og:url"]', currentUrl);
+    setMeta('meta[name="twitter:title"]', seo.title);
+    setMeta('meta[name="twitter:description"]', seo.description);
+
+    const canonical = document.querySelector('link[rel="canonical"]');
+    if (canonical) canonical.setAttribute('href', currentUrl);
+  }, [activeView, selectedCategorySlug]);
 
   // Global keyboard shortcut to open Intelligent Discovery (/ or Cmd/Ctrl+K)
   useEffect(() => {
@@ -849,11 +1011,20 @@ export default function App() {
     currentUser?.role === 'super_admin' ||
     currentUser?.role === 'moderator';
 
+  const syncUrlToRoute = (nextView: NavView, nextCatSlug = 'all') => {
+    if (typeof window === 'undefined' || nextView === 'admin') return;
+    const targetPath = buildRoutePath(nextView, nextCatSlug);
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState(null, '', targetPath);
+    }
+  };
+
   const switchView = (nextView: NavView, resetMinisters = false) => {
     React.startTransition(() => {
       if (resetMinisters) setSelectedChannelId(null);
       setActiveView(nextView);
     });
+    syncUrlToRoute(nextView, nextView === 'categories' ? selectedCategorySlug : 'all');
     window.scrollTo(0, 0);
   };
 
@@ -862,6 +1033,7 @@ export default function App() {
       setSelectedChannelId(channelId);
       setActiveView('ministers');
     });
+    syncUrlToRoute('ministers');
     window.scrollTo(0, 0);
   };
 
@@ -887,6 +1059,7 @@ export default function App() {
       setVisibleCategoryCount(isDataSaverActive ? 12 : 24);
       setActiveView('categories');
     });
+    syncUrlToRoute('categories', slug);
     window.scrollTo(0, 0);
   };
 
@@ -899,7 +1072,7 @@ export default function App() {
         <div className="max-w-[1440px] w-full mx-auto flex items-center justify-between gap-2 sm:gap-8 px-3.5 sm:px-8 py-3 sm:py-4">
           {/* Zone 1: Single text element wordmark */}
           <a
-            href="#top"
+            href="/"
             onClick={(e) => {
               e.preventDefault();
               setRankingMode('rails');
@@ -915,7 +1088,7 @@ export default function App() {
           {/* Zone 2: 5 concise single-line text navigation links */}
           <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-zinc-400">
             <a
-              href="#streaming"
+              href="/"
               onClick={(e) => {
                 e.preventDefault();
                 switchView('streaming');
@@ -929,7 +1102,7 @@ export default function App() {
               Streaming
             </a>
             <a
-              href="#categories"
+              href="/categories"
               onClick={(e) => {
                 e.preventDefault();
                 switchView('categories');
@@ -943,7 +1116,7 @@ export default function App() {
               Categories
             </a>
             <a
-              href="#ministers"
+              href="/ministers"
               onClick={(e) => {
                 e.preventDefault();
                 switchView('ministers', true);
@@ -957,7 +1130,7 @@ export default function App() {
               Explore Ministers
             </a>
             <a
-              href="#movies"
+              href="/movies"
               onClick={(e) => {
                 e.preventDefault();
                 switchView('movies');
@@ -971,7 +1144,7 @@ export default function App() {
               Movies
             </a>
             <a
-              href="#community"
+              href="/community"
               onClick={(e) => {
                 e.preventDefault();
                 switchView('community');
@@ -1387,6 +1560,7 @@ export default function App() {
                     setSelectedCategorySlug('all');
                     setVisibleCategoryCount(isDataSaverActive ? 12 : 24);
                   });
+                  syncUrlToRoute('categories', 'all');
                 }}
                 className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                   selectedCategorySlug === 'all'
@@ -1410,6 +1584,7 @@ export default function App() {
                         setSelectedCategorySlug(cat.slug);
                         setVisibleCategoryCount(isDataSaverActive ? 12 : 24);
                       });
+                      syncUrlToRoute('categories', cat.slug);
                     }}
                     className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                       selectedCategorySlug === cat.slug
@@ -1822,44 +1997,76 @@ export default function App() {
           </div>
 
           <div className="flex items-center flex-wrap gap-5">
-            <button
-              type="button"
-              onClick={() => setActiveView('streaming')}
+            <a
+              href="/"
+              onClick={(e) => {
+                e.preventDefault();
+                switchView('streaming');
+              }}
               className="hover:text-zinc-300 transition-colors"
             >
               Streaming
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveView('categories')}
+            </a>
+            <a
+              href="/movies"
+              onClick={(e) => {
+                e.preventDefault();
+                switchView('movies');
+              }}
+              className="hover:text-zinc-300 transition-colors"
+            >
+              Christian Movies
+            </a>
+            <a
+              href="/categories/gospel-music"
+              onClick={(e) => {
+                e.preventDefault();
+                openCategoryExplorer('gospel-music');
+              }}
+              className="hover:text-zinc-300 transition-colors"
+            >
+              Gospel Songs
+            </a>
+            <a
+              href="/categories/worship-praise"
+              onClick={(e) => {
+                e.preventDefault();
+                openCategoryExplorer('worship-praise');
+              }}
+              className="hover:text-zinc-300 transition-colors"
+            >
+              Worship
+            </a>
+            <a
+              href="/categories"
+              onClick={(e) => {
+                e.preventDefault();
+                switchView('categories');
+              }}
               className="hover:text-zinc-300 transition-colors"
             >
               Categories
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedChannelId(null);
-                setActiveView('ministers');
+            </a>
+            <a
+              href="/ministers"
+              onClick={(e) => {
+                e.preventDefault();
+                switchView('ministers', true);
               }}
               className="hover:text-zinc-300 transition-colors"
             >
               Ministers
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveView('movies')}
-              className="hover:text-zinc-300 transition-colors"
-            >
-              Movies
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveView('community')}
+            </a>
+            <a
+              href="/community"
+              onClick={(e) => {
+                e.preventDefault();
+                switchView('community');
+              }}
               className="hover:text-zinc-300 transition-colors"
             >
               Community
-            </button>
+            </a>
           </div>
         </div>
       </footer>
