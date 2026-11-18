@@ -22,7 +22,6 @@ import { AuthAndProfileModal } from './components/AuthAndProfileModal.tsx';
 import { ChristianLivingSanctuaryView } from './components/ChristianLivingSanctuaryView.tsx';
 import { ChristianMoviesView } from './components/ChristianMoviesView.tsx';
 import { CommunityAndMessagingView } from './components/CommunityAndMessagingView.tsx';
-import { DailyAltarCard } from './components/DailyAltarCard.tsx';
 import {
   buildConsolidatedMinisterProfiles,
   ExploreMinistersView,
@@ -1402,9 +1401,6 @@ export default function App() {
                 (All other videos live strictly inside their fitting Categories)
             ================================================================ */}
             <section className="max-w-[1440px] w-full mx-auto px-4 sm:px-8 flex flex-col gap-6 sm:gap-8">
-              {/* 0. DAILY ALTAR STREAK & VERSE OF THE DAY */}
-              <DailyAltarCard userId={currentUser?.id} />
-
               {/* 1. LIVE SERVICE COUNTDOWN, DAILY PRAYER SCHEDULE & LIVE BROADCASTS */}
               <LiveSpecialBroadcastsView
                 videos={streamingVideos}

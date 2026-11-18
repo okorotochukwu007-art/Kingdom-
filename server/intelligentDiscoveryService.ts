@@ -19,6 +19,11 @@ import {
   parseRelativeTimeTextToIso,
   searchYouTubeStructured,
 } from './youtubeService.ts';
+import {
+  buildMovieSearchQueries,
+  classifyDiscoveredMovie,
+  isLikelyChristianMovieOrCartoon,
+} from '../functions/api/christian-search.ts';
 
 function getGenAI(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -839,15 +844,25 @@ export async function searchChristianMoviesBeyondLibrary(
     CHRISTIAN_MOVIE_GENRES[0];
 
   const cleanQuery = query.trim();
-  const searchQuery = cleanQuery
-    ? /\b(christian|gospel|bible|biblical|faith|mount zion|jesus|christ|winlos|bamiloye)\b/i.test(
-        cleanQuery
-      )
-      ? `${cleanQuery} ${genreConfig.id !== 'all' ? genreConfig.querySuffix : 'Christian movie'}`.trim()
-      : `${cleanQuery} Christian movie full faith drama`
-    : genreConfig.querySuffix;
+  const movieScope =
+    rawGenre.includes('cartoon') || rawGenre.includes('animat')
+      ? 'movies-cartoon'
+      : rawGenre.includes('nigerian') || rawGenre.includes('african')
+      ? 'movies-nigerian'
+      : rawGenre.includes('international')
+      ? 'movies-international'
+      : 'movies';
 
-  // 1. Search local curated movies
+  const queriesToRun = cleanQuery
+    ? buildMovieSearchQueries(
+        genreConfig.id !== 'all'
+          ? `${cleanQuery} ${genreConfig.label.replace(/Christian Movies/i, '').trim()}`
+          : cleanQuery,
+        movieScope
+      )
+    : [genreConfig.querySuffix];
+
+  // 1. Search local curated movies & cartoons (Nigerian & International)
   const MOVIE_SLUGS = new Set([
     'real-christian-movies',
     'bible-stories',
@@ -856,6 +871,10 @@ export async function searchChristianMoviesBeyondLibrary(
   ]);
 
   const qLower = cleanQuery.toLowerCase();
+  const qWords = qLower
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && w !== 'christian' && w !== 'movie' && w !== 'movies');
+
   const genreTokens =
     genreConfig.id === 'all'
       ? []
@@ -875,10 +894,9 @@ export async function searchChristianMoviesBeyondLibrary(
 
     const hay = `${v.title} ${v.description} ${v.channel_title} ${v.primary_category_name} ${
       v.subcategory_label || ''
-    }`.toLowerCase();
+    } ${v.is_nigerian_channel ? 'nigeria nigerian african' : 'international global'}`.toLowerCase();
 
     if (qLower && !hay.includes(qLower)) {
-      const qWords = qLower.split(/\s+/).filter((w) => w.length > 2);
       if (qWords.length === 0 || !qWords.every((w) => hay.includes(w))) {
         return false;
       }
@@ -894,36 +912,52 @@ export async function searchChristianMoviesBeyondLibrary(
     return true;
   });
 
-  // 2. Discover from YouTube Data API / structured search (with strict Christian movie guardrails)
-  const discoveredRaw = isSecularQuery(cleanQuery)
-    ? []
-    : await searchYouTubeViaDataApi(searchQuery, maxResults);
-
-  const CHRISTIAN_POSITIVE =
-    /\b(christian|gospel|faith|bible|biblical|jesus|christ|mount zion|bamiloye|evom|jaymikee|winlos|angel studios|the chosen|superbook|vision video|salvation|redemption|deliverance|prayer|holy spirit|pastor|church drama)\b/i;
+  // 2. Discover from YouTube Data API / structured search (strictly Christian Movies & Cartoons only)
+  let discoveredRaw: KingdomVideo[] = [];
+  if (!isSecularQuery(cleanQuery)) {
+    const batches = await Promise.all(
+      queriesToRun.slice(0, 2).map((q) => searchYouTubeViaDataApi(q, Math.ceil(maxResults / Math.min(2, queriesToRun.length)) + 4))
+    );
+    discoveredRaw = batches.flat();
+  }
 
   const curatedYtIds = new Set(curatedMovies.map((m) => m.youtube_video_id));
-  const discoveredMovies = discoveredRaw
-    .filter((v) => {
-      if (curatedYtIds.has(v.youtube_video_id)) return false;
-      const hay = `${v.title} ${v.description} ${v.channel_title}`;
-      if (isSecularQuery(hay)) return false;
-      if (/\b(#shorts|trailer only|official trailer|teaser|reaction|review)\b/i.test(v.title)) {
-        return false;
-      }
-      if (typeof v.duration_seconds === 'number' && v.duration_seconds > 0 && v.duration_seconds < 180) {
-        return false;
-      }
-      return CHRISTIAN_POSITIVE.test(hay);
-    })
-    .map((v) => ({
-      ...v,
-      primary_category_slug: 'real-christian-movies',
-      primary_category_name: 'Christian Feature Movies',
-      subcategory_label: genreConfig.label,
-    }));
+  const seenDiscovered = new Set<string>();
+  const discoveredMovies: KingdomVideo[] = [];
 
-  const movies = [...curatedMovies, ...discoveredMovies];
+  for (const v of discoveredRaw) {
+    if (!v.youtube_video_id || curatedYtIds.has(v.youtube_video_id) || seenDiscovered.has(v.youtube_video_id)) {
+      continue;
+    }
+    if (
+      !isLikelyChristianMovieOrCartoon(
+        v.title,
+        v.channel_title,
+        v.description || '',
+        v.duration_seconds ?? null,
+        movieScope
+      )
+    ) {
+      continue;
+    }
+    seenDiscovered.add(v.youtube_video_id);
+    const cls = classifyDiscoveredMovie(v.title, v.channel_title, v.description || '');
+    discoveredMovies.push({
+      ...v,
+      channel_type: cls.isCartoon ? 'animation_studio' : 'movie_studio',
+      is_nigerian_channel: cls.isNigerian,
+      primary_category_id: cls.categoryId,
+      primary_category_slug: cls.categorySlug,
+      primary_category_name: cls.categoryName,
+      secondary_category_slugs: cls.isCartoon
+        ? ['christian-animations', 'bible-story-cartoons']
+        : ['real-christian-movies', 'bible-stories'],
+      subcategory_label:
+        genreConfig.id !== 'all' ? `${genreConfig.label} · ${cls.subcategoryLabel}` : cls.subcategoryLabel,
+    });
+  }
+
+  const movies = [...curatedMovies, ...discoveredMovies].slice(0, maxResults);
 
   return {
     genre: genreConfig.label,
@@ -957,6 +991,13 @@ export async function executeIntelligentDiscovery(
 
   // 1. AI Intent Understanding
   const intent = await understandSearchIntent(cleanQuery, scope);
+  if (scope === 'movies') {
+    intent.detectedType = 'movie';
+    intent.detectedCategorySlug = 'real-christian-movies';
+    if (cleanQuery) {
+      intent.optimizedYouTubeQueries = buildMovieSearchQueries(cleanQuery, 'movies');
+    }
+  }
 
   // 2. Search In-App Curated Library First
   const qLower = cleanQuery.toLowerCase();
@@ -1011,7 +1052,7 @@ export async function executeIntelligentDiscovery(
   let discoveredVideos: KingdomVideo[] = [];
   let discoveredMinister: DiscoveredMinisterInfo | null = null;
 
-  if (intent.detectedType === 'minister' && intent.detectedMinisterName) {
+  if (scope !== 'movies' && intent.detectedType === 'minister' && intent.detectedMinisterName) {
     discoveredMinister = await searchChristianMinisterBeyondCatalogue(intent.detectedMinisterName);
   } else if (cleanQuery && intent.optimizedYouTubeQueries.length > 0) {
     const ytQuery = intent.optimizedYouTubeQueries[0];
@@ -1020,12 +1061,38 @@ export async function executeIntelligentDiscovery(
     // Dedup against curated videos
     const curatedIds = new Set(curatedVideos.map((v) => v.youtube_video_id));
     discoveredVideos = rawDiscovered
-      .filter((v) => !curatedIds.has(v.youtube_video_id))
-      .map((v) => ({
-        ...v,
-        primary_category_slug: intent.detectedCategorySlug || v.primary_category_slug,
-        subcategory_label: intent.movieGenre || intent.intentSummary,
-      }));
+      .filter((v) => {
+        if (curatedIds.has(v.youtube_video_id)) return false;
+        if (scope === 'movies') {
+          return isLikelyChristianMovieOrCartoon(
+            v.title,
+            v.channel_title,
+            v.description || '',
+            v.duration_seconds ?? null,
+            'movies'
+          );
+        }
+        return true;
+      })
+      .map((v) => {
+        if (scope === 'movies') {
+          const cls = classifyDiscoveredMovie(v.title, v.channel_title, v.description || '');
+          return {
+            ...v,
+            channel_type: cls.isCartoon ? 'animation_studio' : 'movie_studio',
+            is_nigerian_channel: cls.isNigerian,
+            primary_category_id: cls.categoryId,
+            primary_category_slug: cls.categorySlug,
+            primary_category_name: cls.categoryName,
+            subcategory_label: cls.subcategoryLabel,
+          };
+        }
+        return {
+          ...v,
+          primary_category_slug: intent.detectedCategorySlug || v.primary_category_slug,
+          subcategory_label: intent.movieGenre || intent.intentSummary,
+        };
+      });
   }
 
   // 4. Handle Broad / Incomplete Queries with Smart Recommendations

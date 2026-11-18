@@ -5,19 +5,12 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Compass,
   Film,
   Flame,
-  Heart,
-  Loader2,
   Play,
   RefreshCw,
   Search,
   Share2,
-  SlidersHorizontal,
-  Sparkles,
-  Tv,
-  X,
 } from 'lucide-react';
 import {
   ContentCategory,
@@ -31,10 +24,7 @@ import {
 import { VideoCard } from './VideoCard.tsx';
 import { GlobalChristianSearchSection } from './GlobalChristianSearchSection.tsx';
 import { useDataSaver } from '../hooks/useDataSaver.ts';
-import {
-  getOptimizedAvatarUrl,
-  getOptimizedThumbnailUrl,
-} from '../utils/dataSaver.ts';
+import { getOptimizedThumbnailUrl } from '../utils/dataSaver.ts';
 import { shareKingdomVideo } from '../utils/shareVideo.ts';
 
 interface ChristianMoviesViewProps {
@@ -53,20 +43,6 @@ const MOVIE_CATEGORY_SLUGS = [
   'christian-animations',
   'bible-story-cartoons',
 ];
-
-export const CHRISTIAN_MOVIE_GENRES = [
-  { id: 'all', label: 'All Christian Movies', icon: Film, queryTerm: '' },
-  { id: 'nigerian', label: 'Nigerian Christian Movies', icon: Film, queryTerm: 'Nigerian Christian movies' },
-  { id: 'african', label: 'African Christian Movies', icon: Compass, queryTerm: 'African Christian movies' },
-  { id: 'international', label: 'International Christian Movies', icon: Tv, queryTerm: 'International Christian movies' },
-  { id: 'biblical', label: 'Biblical & Historical', icon: Sparkles, queryTerm: 'Biblical and historical movies' },
-  { id: 'spiritual-warfare', label: 'Spiritual Warfare & Deliverance', icon: Flame, queryTerm: 'Spiritual warfare and deliverance movies' },
-  { id: 'family-dramas', label: 'Christian Family Dramas', icon: Tv, queryTerm: 'Christian family dramas' },
-  { id: 'romance', label: 'Christian Romance', icon: Heart, queryTerm: 'Christian romance movies' },
-  { id: 'redemption', label: 'Redemption & Transformation', icon: Sparkles, queryTerm: 'Redemption and transformation movies' },
-  { id: 'faith-miracles', label: 'Faith, Miracles & Inspiration', icon: Sparkles, queryTerm: 'Faith miracles and inspirational movies' },
-  { id: 'comedy-action', label: 'Christian Comedy & Action', icon: Film, queryTerm: 'Christian comedy and action movies' },
-] as const;
 
 type MovieSortLens = 'high_impression_recent' | 'most_viewed' | 'highest_engagement' | 'newest';
 
@@ -95,26 +71,23 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
   const { isDataSaverActive } = useDataSaver();
   const [selectedCategorySlug, setSelectedCategorySlug] = useState<string>('all');
   const [selectedStudioId, setSelectedStudioId] = useState<string | null>(null);
-  const [selectedGenreId, setSelectedGenreId] = useState<string>('all');
-  const [sortLens, setSortLens] = useState<MovieSortLens>('high_impression_recent');
-  const [searchQuery, setSearchQuery] = useState('');
   const [heroIndex, setHeroIndex] = useState(0);
   const [visibleMovieCount, setVisibleMovieCount] = useState<number>(() =>
     isDataSaverActive ? 12 : 24
   );
 
-  // Live YouTube Christian movie release & trending caption alerts
+  // Live Christian movie release & trending caption alerts
   const [trendingAlerts, setTrendingAlerts] = useState<MovieTrendingAlert[]>([]);
   const [alertsCheckedAt, setAlertsCheckedAt] = useState<string | null>(null);
   const [isCheckingAlerts, setIsCheckingAlerts] = useState(false);
   const [heroPaused, setHeroPaused] = useState(false);
   const lastFetchedMsRef = useRef<number>(0);
   const resultsSectionRef = useRef<HTMLDivElement | null>(null);
-
-  // Beyond-library YouTube movie discovery state
-  const [discoveredMovies, setDiscoveredMovies] = useState<KingdomVideo[]>([]);
-  const [isSearchingDiscovered, setIsSearchingDiscovered] = useState(false);
-  const [discoveredSearchLabel, setDiscoveredSearchLabel] = useState<string | null>(null);
+  const movieSearchSectionRef = useRef<HTMLDivElement | null>(null);
+  const [movieSearchTrigger, setMovieSearchTrigger] = useState<{
+    query: string;
+    nonce: number;
+  } | null>(null);
 
   const loadTrendingMovieAlerts = async (forceRefresh = false) => {
     setIsCheckingAlerts(true);
@@ -283,17 +256,8 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     if (selectedStudioId) {
       list = list.filter((v) => v.channel_id === selectedStudioId);
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (v) =>
-          v.title.toLowerCase().includes(q) ||
-          v.channel_title.toLowerCase().includes(q) ||
-          v.description.toLowerCase().includes(q)
-      );
-    }
-    return sortMoviesByLens(list, sortLens);
-  }, [allMovieVideos, selectedCategorySlug, selectedStudioId, searchQuery, sortLens]);
+    return sortMoviesByLens(list, 'high_impression_recent');
+  }, [allMovieVideos, selectedCategorySlug, selectedStudioId]);
 
   const nigerianChristianCinema = useMemo(() => {
     return sortMoviesByLens(
@@ -302,108 +266,19 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
     );
   }, [allMovieVideos]);
 
-  const filterLocalMovies = (genreTerm: string, queryTerm: string) => {
-    const terms = `${genreTerm} ${queryTerm}`
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((t) => t.length > 2 && t !== 'christian' && t !== 'movie' && t !== 'movies');
-    return allMovieVideos.filter((v) => {
-      const hay = `${v.title} ${v.channel_title} ${v.description} ${v.primary_category_name} ${v.subcategory_label || ''}`.toLowerCase();
-      return terms.length === 0 || terms.some((t) => hay.includes(t));
-    });
-  };
-
-  const handleSelectGenre = async (genreId: string) => {
-    setSelectedGenreId(genreId);
-    const genreObj = CHRISTIAN_MOVIE_GENRES.find((g) => g.id === genreId);
-    if (!genreObj || genreId === 'all') {
-      setDiscoveredMovies([]);
-      setDiscoveredSearchLabel(null);
-      return;
-    }
-
-    setIsSearchingDiscovered(true);
-    setDiscoveredSearchLabel(genreObj.label);
-    try {
-      const res = await fetch(
-        `/api/discovery/movies?genre=${encodeURIComponent(genreObj.id)}&query=${encodeURIComponent(
-          searchQuery
-        )}`
-      );
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const data = await res.json();
-        const combined = Array.isArray(data.movies)
-          ? data.movies
-          : [...(data.curatedMovies || []), ...(data.discoveredMovies || [])];
-        if (combined.length > 0) {
-          setDiscoveredMovies(combined);
-          return;
-        }
-      }
-      setDiscoveredMovies(filterLocalMovies(genreObj.queryTerm, searchQuery));
-    } catch {
-      setDiscoveredMovies(filterLocalMovies(genreObj.queryTerm, searchQuery));
-    } finally {
-      setIsSearchingDiscovered(false);
-    }
-  };
-
-  const runMovieSearchQuery = async (rawTerm: string) => {
-    const trimmed = rawTerm.trim();
-    if (!trimmed) return;
-
-    setIsSearchingDiscovered(true);
-    const activeGenre = CHRISTIAN_MOVIE_GENRES.find((g) => g.id === selectedGenreId);
-    const genreTerm = activeGenre && activeGenre.id !== 'all' ? activeGenre.id : '';
-    setDiscoveredSearchLabel(trimmed);
-    try {
-      const res = await fetch(
-        `/api/discovery/movies?genre=${encodeURIComponent(genreTerm)}&query=${encodeURIComponent(
-          trimmed
-        )}`
-      );
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const data = await res.json();
-        const combined = Array.isArray(data.movies)
-          ? data.movies
-          : [...(data.curatedMovies || []), ...(data.discoveredMovies || [])];
-        if (combined.length > 0) {
-          setDiscoveredMovies(combined);
-          return;
-        }
-      }
-      setDiscoveredMovies(filterLocalMovies(genreTerm, trimmed));
-    } catch {
-      setDiscoveredMovies(filterLocalMovies(genreTerm, trimmed));
-    } finally {
-      setIsSearchingDiscovered(false);
-    }
-  };
-
-  const handleCustomMovieSearch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    await runMovieSearchQuery(searchQuery);
-  };
-
-  const handleSearchAnnouncedMovieInApp = async (alert: MovieTrendingAlert) => {
+  const handleSearchAnnouncedMovieInApp = (alert: MovieTrendingAlert) => {
     setSelectedCategorySlug('all');
     setSelectedStudioId(null);
-    setSearchQuery(alert.searchKeyword);
     if (onDiscoveredVideoSelected) {
       onDiscoveredVideoSelected(alert.video);
     }
+    setMovieSearchTrigger({
+      query: alert.searchKeyword,
+      nonce: Date.now(),
+    });
     window.setTimeout(() => {
-      resultsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      movieSearchSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 80);
-    await runMovieSearchQuery(alert.searchKeyword);
-  };
-
-  const handleClearDiscovered = () => {
-    setDiscoveredMovies([]);
-    setDiscoveredSearchLabel(null);
-    setSelectedGenreId('all');
   };
 
   return (
@@ -723,228 +598,24 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
           })}
         </section>
 
-        {/* ====================================================================
-            10 USER-SPECIFIED CHRISTIAN MOVIE GENRES (Explore Beyond Our Library)
-        ==================================================================== */}
-        <section className="flex flex-col gap-3.5 p-5 rounded-2xl bg-gradient-to-r from-[#121216] via-[#15141c] to-[#121216] border border-zinc-800/90 shadow-xl">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-amber-400" />
-                <h3 className="text-sm font-semibold text-zinc-100">
-                  Explore Christian Movies Beyond Our Library
-                </h3>
-              </div>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                Discover full-length feature films, dramas, and biblical cinema from the Global Christian Network by genre.
-              </p>
-            </div>
-
-            {discoveredMovies.length > 0 && (
-              <button
-                type="button"
-                onClick={handleClearDiscovered}
-                className="text-xs text-amber-400 hover:underline flex items-center gap-1 self-start sm:self-auto"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>Clear Discovered Movies</span>
-              </button>
-            )}
-          </div>
-
-          {/* 11 Genre Filter Buttons */}
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
-            {CHRISTIAN_MOVIE_GENRES.map((genre) => {
-              const Icon = genre.icon;
-              const isSelected = selectedGenreId === genre.id;
-              return (
-                <button
-                  key={genre.id}
-                  type="button"
-                  onClick={() => handleSelectGenre(genre.id)}
-                  disabled={isSearchingDiscovered}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium border transition-all whitespace-nowrap shrink-0 ${
-                    isSelected
-                      ? 'bg-amber-500 text-zinc-950 border-amber-500 font-semibold shadow-md'
-                      : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 hover:border-zinc-700'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span>{genre.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Live Discovered Christian Movies from YouTube */}
-        {(isSearchingDiscovered || discoveredMovies.length > 0) && (
-          <section className="flex flex-col gap-4 p-5 rounded-2xl bg-[#0f0e13] border border-amber-500/30">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
-                <h3 className="font-display text-lg font-semibold text-zinc-100">
-                  Discovered Christian Movies ({discoveredMovies.length})
-                </h3>
-                {discoveredSearchLabel && (
-                  <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                    {discoveredSearchLabel}
-                  </span>
-                )}
-              </div>
-              <span className="text-xs text-zinc-400 font-medium">Global Faith Cinema</span>
-            </div>
-
-            {isSearchingDiscovered ? (
-              <div className="py-12 flex flex-col items-center justify-center gap-3 text-center">
-                <Loader2 className="w-7 h-7 text-amber-400 animate-spin" />
-                <p className="text-sm font-medium text-zinc-200">
-                  Searching Global Christian Network for authentic movies &amp; dramas...
-                </p>
-                <p className="text-xs text-zinc-500">
-                  Indexing &amp; ranking verified faith films for KINGDOM+ Cinema
-                </p>
-              </div>
-            ) : discoveredMovies.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-                {discoveredMovies.map((video) => (
-                  <div key={video.id} className="relative group">
-                    <VideoCard
-                      video={video}
-                      onSelect={(v) => {
-                        onSelectVideo(v);
-                        if (onDiscoveredVideoSelected) onDiscoveredVideoSelected(v);
-                      }}
-                      isSaved={savedVideoIds.includes(video.id)}
-                      onToggleSave={onToggleSave}
-                    />
-                    <div className="absolute top-2 left-2 pointer-events-none px-2 py-0.5 rounded bg-black/85 border border-amber-500/40 text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider">
-                      KINGDOM+ Discovery
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-zinc-400 py-4 text-center">
-                No external Christian movies found for this filter. Try selecting another genre above.
-              </p>
-            )}
-          </section>
-        )}
-
-        {/* Global Christian Search Section */}
-        <GlobalChristianSearchSection
-          localVideos={allMovieVideos}
-          savedVideoIds={savedVideoIds}
-          onSelectVideo={onSelectVideo}
-          onToggleSave={onToggleSave}
-          onSelectChannel={(chId) => setSelectedStudioId(chId)}
-          onDiscoveredVideoSelected={onDiscoveredVideoSelected}
-          initialCategoryScope="movies"
-        />
-
-        {/* Search, Category Filter & High-Impression Sort Controls */}
-        <section className="p-4 rounded-xl bg-[#121215] border border-zinc-800/90 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
-          <form onSubmit={handleCustomMovieSearch} className="relative flex-1 max-w-md flex items-center">
-            <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search Christian movies, Mount Zion films, Bible stories..."
-              className="w-full pl-10 pr-24 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500"
-            />
-            <button
-              type="submit"
-              className="absolute right-1 px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs transition-colors"
-            >
-              Explore
-            </button>
-          </form>
-
-          <div className="flex items-center gap-1.5 overflow-x-auto">
-            <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500 mr-1 shrink-0" />
-            {[
-              { id: 'high_impression_recent', label: 'Recent & High Impression' },
-              { id: 'most_viewed', label: 'Most Viewed Blockbusters' },
-              { id: 'highest_engagement', label: 'Highest Engagement' },
-              { id: 'newest', label: 'Newest Releases' },
-            ].map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setSortLens(item.id as MovieSortLens)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  sortLens === item.id
-                    ? 'bg-amber-500 text-zinc-950 font-semibold'
-                    : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        {/* Official Film & Animation Studios Filter Bar */}
-        <section className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-zinc-400">
-              Official Christian Movie & Animation Studios
-            </span>
-            {selectedStudioId && (
-              <button
-                type="button"
-                onClick={() => setSelectedStudioId(null)}
-                className="text-xs text-amber-400 hover:underline"
-              >
-                Clear Studio Filter
-              </button>
-            )}
-          </div>
-          <div className="flex items-center gap-2.5 overflow-x-auto pb-2">
-            <button
-              type="button"
-              onClick={() => setSelectedStudioId(null)}
-              className={`px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
-                selectedStudioId === null
-                  ? 'bg-amber-500 text-zinc-950 border-amber-500 font-semibold'
-                  : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-              }`}
-            >
-              All Studios ({allMovieVideos.length})
-            </button>
-            {movieStudios.map((studio) => {
-              const isSelected = selectedStudioId === studio.id;
-              return (
-                <button
-                  key={studio.id}
-                  type="button"
-                  onClick={() => setSelectedStudioId(isSelected ? null : studio.id)}
-                  className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
-                    isSelected
-                      ? 'bg-amber-500/20 border-amber-500 text-amber-300'
-                      : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                  }`}
-                >
-                  <img
-                    src={getOptimizedAvatarUrl(studio.avatar_url, isDataSaverActive)}
-                    alt={studio.title}
-                    loading="lazy"
-                    decoding="async"
-                    referrerPolicy="no-referrer"
-                    className="w-5 h-5 rounded-full object-cover bg-zinc-800"
-                  />
-                  <span>{studio.title.split('(')[0].trim()}</span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
+        {/* Unified Movies & Cartoons-Only Intelligent Search Bar */}
+        <div ref={movieSearchSectionRef}>
+          <GlobalChristianSearchSection
+            localVideos={allMovieVideos}
+            savedVideoIds={savedVideoIds}
+            onSelectVideo={onSelectVideo}
+            onToggleSave={onToggleSave}
+            onSelectChannel={(chId) => setSelectedStudioId(chId)}
+            onDiscoveredVideoSelected={onDiscoveredVideoSelected}
+            initialCategoryScope="movies"
+            moviesOnly={true}
+            externalSearchRequest={movieSearchTrigger}
+          />
+        </div>
 
         {/* Filtered View vs Full Dedicated Movie Category Rails */}
         <div ref={resultsSectionRef} />
-        {selectedCategorySlug !== 'all' || selectedStudioId !== null || searchQuery.trim() !== '' ? (
+        {selectedCategorySlug !== 'all' || selectedStudioId !== null ? (
           <section className="flex flex-col gap-5">
             <div className="flex items-center justify-between">
               <div>
@@ -961,7 +632,6 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                 onClick={() => {
                   setSelectedCategorySlug('all');
                   setSelectedStudioId(null);
-                  setSearchQuery('');
                 }}
                 className="text-xs text-amber-400 hover:underline"
               >
@@ -1037,7 +707,7 @@ export const ChristianMoviesView: React.FC<ChristianMoviesViewProps> = ({
                     v.primary_category_slug === cat.slug ||
                     v.secondary_category_slugs.includes(cat.slug)
                 ),
-                sortLens
+                'high_impression_recent'
               );
 
               if (catVideos.length === 0) return null;

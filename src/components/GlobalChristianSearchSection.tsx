@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Compass,
+  Film,
   Flame,
   Loader2,
   Search,
@@ -20,7 +21,27 @@ interface GlobalChristianSearchSectionProps {
   onDiscoveredVideoSelected?: (video: KingdomVideo) => void;
   initialCategoryScope?: string;
   compact?: boolean;
+  moviesOnly?: boolean;
+  externalSearchRequest?: { query: string; nonce: number } | null;
 }
+
+const MOVIE_CATEGORY_SLUGS = new Set([
+  'real-christian-movies',
+  'bible-stories',
+  'christian-animations',
+  'bible-story-cartoons',
+]);
+
+const CARTOON_CATEGORY_SLUGS = new Set([
+  'christian-animations',
+  'bible-story-cartoons',
+]);
+
+const MOVIE_CARTOON_TEXT_REGEX =
+  /\b(cartoon|cartoons|animation|animated|superbook|veggietales|veggie tales|beginner'?s bible|saddleback kids|cbn animation|bible story|bible stories)\b/i;
+
+const NON_MOVIE_CLIENT_REJECT_REGEX =
+  /\b(#shorts|#short|official trailer|movie trailer|teaser|facts and review|facts & review|\breview\b|\brecap\b|ending explained|reaction video|behind the scenes|making of|official audio|lyric video|music video|full album|greatest hits|worship songs|gospel songs|praise songs|playlist|mixtape|worship session|worship medley|praise session|praise medley|spontaneous worship|live worship|worship song|gospel song|sunday service|live service|hallelujah challenge|nsppd|sermon|preaching|podcast|interview)\b/i;
 
 const QUICK_CHRISTIAN_SEARCH_TOPICS = [
   { label: 'Apostle Joshua Selman Spiritual Growth', category: 'sermons-teachings' },
@@ -32,6 +53,15 @@ const QUICK_CHRISTIAN_SEARCH_TOPICS = [
   { label: 'Mercy Chinwo & Moses Bliss Gospel Praise', category: 'gospel-music' },
   { label: 'Apostle Femi Lazarus Christian Living', category: 'christian-living' },
   { label: 'Mount Zion Full Christian Movies', category: 'movies' },
+];
+
+const QUICK_MOVIE_SEARCH_TOPICS = [
+  { label: 'Mount Zion Full Movies', category: 'movies-nigerian' },
+  { label: 'Bible Story Cartoons', category: 'movies-cartoon' },
+  { label: 'Nigerian Christian Movies', category: 'movies-nigerian' },
+  { label: 'International Christian Films', category: 'movies-international' },
+  { label: 'Superbook Bible Animation', category: 'movies-cartoon' },
+  { label: 'Joseph & Esther Bible Movies', category: 'movies' },
 ];
 
 const CATEGORY_SCOPES = [
@@ -46,6 +76,51 @@ const CATEGORY_SCOPES = [
   { id: 'movies', label: 'Christian Movies' },
 ];
 
+const MOVIE_CATEGORY_SCOPES = [
+  { id: 'movies', label: 'All Movies & Cartoons' },
+  { id: 'movies-real', label: 'Real Christian Movies' },
+  { id: 'movies-cartoon', label: 'Cartoons & Animations' },
+  { id: 'movies-nigerian', label: 'Nigerian & African' },
+  { id: 'movies-international', label: 'International & Biblical' },
+];
+
+function isLocalVideoMovieOrCartoon(v: KingdomVideo): boolean {
+  return (
+    MOVIE_CATEGORY_SLUGS.has(v.primary_category_slug) ||
+    v.secondary_category_slugs.some((s) => MOVIE_CATEGORY_SLUGS.has(s)) ||
+    v.channel_type === 'movie_studio' ||
+    v.channel_type === 'animation_studio'
+  );
+}
+
+function isLocalVideoCartoon(v: KingdomVideo): boolean {
+  return (
+    CARTOON_CATEGORY_SLUGS.has(v.primary_category_slug) ||
+    v.secondary_category_slugs.some((s) => CARTOON_CATEGORY_SLUGS.has(s)) ||
+    v.channel_type === 'animation_studio' ||
+    MOVIE_CARTOON_TEXT_REGEX.test(`${v.title} ${v.channel_title} ${v.subcategory_label || ''}`)
+  );
+}
+
+function matchesMovieSubScope(v: KingdomVideo, scope: string): boolean {
+  if (!isLocalVideoMovieOrCartoon(v)) return false;
+  const cartoon = isLocalVideoCartoon(v);
+  if (scope === 'movies-cartoon') return cartoon;
+  if (scope === 'movies-real') return !cartoon;
+  if (scope === 'movies-nigerian') {
+    return (
+      v.is_nigerian_channel ||
+      /\b(nigerian|nigeria|mount zion|bamiloye|winlos|jaymikee|evom|flaming sword|african)\b/i.test(
+        `${v.title} ${v.channel_title} ${v.subcategory_label || ''}`
+      )
+    );
+  }
+  if (scope === 'movies-international') {
+    return !v.is_nigerian_channel;
+  }
+  return true;
+}
+
 export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSectionProps> = ({
   localVideos,
   savedVideoIds,
@@ -54,24 +129,79 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
   onSelectChannel,
   onDiscoveredVideoSelected,
   initialCategoryScope = 'all',
+  moviesOnly = false,
+  externalSearchRequest = null,
 }) => {
+  const isMoviesMode = moviesOnly || initialCategoryScope.startsWith('movies');
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
-  const [categoryScope, setCategoryScope] = useState(initialCategoryScope);
+  const [categoryScope, setCategoryScope] = useState(
+    isMoviesMode ? 'movies' : initialCategoryScope
+  );
   const [loadingGlobal, setLoadingGlobal] = useState(false);
   const [globalResults, setGlobalResults] = useState<KingdomVideo[]>([]);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isMoviesMode) {
+      setCategoryScope((prev) => (prev.startsWith('movies') ? prev : 'movies'));
+      return;
+    }
     if (initialCategoryScope && initialCategoryScope !== 'live-special-broadcasts') {
       setCategoryScope(initialCategoryScope);
     }
-  }, [initialCategoryScope]);
+  }, [initialCategoryScope, isMoviesMode]);
 
-  // Instant matches from the in-app curated catalog
+  useEffect(() => {
+    if (externalSearchRequest && externalSearchRequest.query.trim()) {
+      const nextQ = externalSearchRequest.query.trim();
+      setQuery(nextQ);
+      const nextScope = isMoviesMode ? 'movies' : categoryScope;
+      executeGlobalSearch(nextQ, nextScope);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalSearchRequest?.nonce]);
+
+  // Instant matches from the in-app curated catalog (strictly movies/cartoons when in moviesOnly mode)
   const localMatches = useMemo(() => {
     const q = (submittedQuery || query).trim().toLowerCase();
     if (!q || q.length < 2) return [];
+
+    if (isMoviesMode) {
+      const activeScope = categoryScope.startsWith('movies') ? categoryScope : 'movies';
+      const fillerWords = new Set(['movie', 'movies', 'film', 'films', 'christian', 'full', 'watch']);
+      const meaningfulTokens = q
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2 && !fillerWords.has(t));
+
+      return localVideos
+        .filter((v) => {
+          if (!matchesMovieSubScope(v, activeScope)) return false;
+
+          const cartoonFlag = isLocalVideoCartoon(v);
+          const originTags = v.is_nigerian_channel
+            ? 'nigerian nigeria african nollywood mount zion'
+            : 'international global english hollywood';
+          const formatTags = cartoonFlag
+            ? 'cartoon cartoons animation animated kids children bible story'
+            : 'real live action feature film drama cinema';
+
+          const hay = `${v.title} ${v.channel_title} ${v.artist_name || ''} ${
+            v.description
+          } ${v.primary_category_name} ${v.subcategory_label || ''} ${originTags} ${formatTags}`.toLowerCase();
+
+          if (hay.includes(q)) return true;
+          if (meaningfulTokens.length === 0) return true;
+          return meaningfulTokens.every((tok) => {
+            if (tok === 'cartoon' || tok === 'cartoons' || tok === 'animated' || tok === 'animation') {
+              return cartoonFlag || hay.includes(tok);
+            }
+            return hay.includes(tok);
+          });
+        })
+        .slice(0, 12);
+    }
 
     return localVideos
       .filter((v) => {
@@ -89,11 +219,17 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
         );
       })
       .slice(0, 8);
-  }, [localVideos, query, submittedQuery, categoryScope]);
+  }, [localVideos, query, submittedQuery, categoryScope, isMoviesMode]);
 
   const executeGlobalSearch = async (searchPhrase: string, scopeOverride?: string) => {
     const clean = searchPhrase.trim();
-    const activeScope = scopeOverride ?? categoryScope;
+    const rawScope = scopeOverride ?? categoryScope;
+    const activeScope = isMoviesMode
+      ? rawScope.startsWith('movies')
+        ? rawScope
+        : 'movies'
+      : rawScope;
+
     setSubmittedQuery(clean);
     if (!clean) {
       setGlobalResults([]);
@@ -122,7 +258,23 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
         );
         setGlobalResults([]);
       } else if (Array.isArray(data.results)) {
-        setGlobalResults(data.results);
+        const incoming: KingdomVideo[] = data.results;
+        const sanitized = isMoviesMode
+          ? incoming.filter((v) => {
+              if (!v?.title || NON_MOVIE_CLIENT_REJECT_REGEX.test(v.title)) return false;
+              const cartoon = isLocalVideoCartoon(v);
+              const minDur = cartoon ? 180 : 600;
+              if (
+                typeof v.duration_seconds === 'number' &&
+                v.duration_seconds > 0 &&
+                v.duration_seconds < minDur
+              ) {
+                return false;
+              }
+              return matchesMovieSubScope(v, activeScope);
+            })
+          : incoming;
+        setGlobalResults(sanitized);
       }
     } catch {
       setGlobalResults([]);
@@ -149,22 +301,37 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
     return globalResults.filter((v) => !localYtIds.has(v.youtube_video_id));
   }, [globalResults, localMatches]);
 
+  const activeScopesList = isMoviesMode ? MOVIE_CATEGORY_SCOPES : CATEGORY_SCOPES;
+  const activeQuickTopics = isMoviesMode
+    ? QUICK_MOVIE_SEARCH_TOPICS
+    : QUICK_CHRISTIAN_SEARCH_TOPICS;
+
   return (
     <section className="p-4 sm:p-6 rounded-2xl bg-gradient-to-br from-[#16151C] via-[#121215] to-[#09090B] border border-amber-500/30 flex flex-col gap-4 shadow-xl">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center flex-wrap gap-2">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-semibold uppercase tracking-wider">
-            <Compass className="w-3.5 h-3.5" />
-            <span>Unlimited Christian &amp; Gospel Discovery</span>
+            {isMoviesMode ? <Film className="w-3.5 h-3.5" /> : <Compass className="w-3.5 h-3.5" />}
+            <span>
+              {isMoviesMode
+                ? 'Christian Movies & Cartoons Search'
+                : 'Unlimited Christian & Gospel Discovery'}
+            </span>
           </span>
           <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>100% Christian-Safe Filter Active</span>
+            <span>
+              {isMoviesMode
+                ? 'Movies & Animations Only (Nigerian & International)'
+                : '100% Christian-Safe Filter Active'}
+            </span>
           </span>
         </div>
         <span className="text-xs text-zinc-400">
-          Search any sermon, minister, gospel song, worship session, or Christian movie — streams natively in KINGDOM+
+          {isMoviesMode
+            ? 'Explores real Christian films & Bible cartoons inside KINGDOM+ and worldwide'
+            : 'Search any sermon, minister, gospel song, worship session, or Christian movie — streams natively in KINGDOM+'}
         </span>
       </div>
 
@@ -176,7 +343,11 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search any Christian sermon, pastor, gospel artist, worship song, or Bible topic..."
+            placeholder={
+              isMoviesMode
+                ? 'Search any Christian movie or cartoon (Nigerian, International, Mount Zion, Bible stories)...'
+                : 'Search any Christian sermon, pastor, gospel artist, worship song, or Bible topic...'
+            }
             className="w-full pl-10 pr-9 py-3 rounded-xl bg-zinc-950/90 border border-zinc-700/90 text-xs sm:text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500"
           />
           {query && (
@@ -204,12 +375,12 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
           {loadingGlobal ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Searching...</span>
+              <span>{isMoviesMode ? 'Finding Movies...' : 'Searching...'}</span>
             </>
           ) : (
             <>
               <Sparkles className="w-4 h-4" />
-              <span>Explore Unlimited Library</span>
+              <span>{isMoviesMode ? 'Search Christian Movies' : 'Explore Unlimited Library'}</span>
             </>
           )}
         </button>
@@ -217,7 +388,7 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
 
       {/* Category Scope Filter Pills */}
       <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-        {CATEGORY_SCOPES.map((sc) => (
+        {activeScopesList.map((sc) => (
           <button
             key={sc.id}
             type="button"
@@ -245,7 +416,7 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
             <Flame className="w-3 h-3 text-amber-400" />
             <span>Try searching:</span>
           </span>
-          {QUICK_CHRISTIAN_SEARCH_TOPICS.map((item) => (
+          {activeQuickTopics.map((item) => (
             <button
               key={item.label}
               type="button"
@@ -271,78 +442,114 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
       )}
 
       {/* Search Results */}
-      {(submittedQuery || loadingGlobal) && !blockedMessage && (
+      {(submittedQuery || loadingGlobal || (isMoviesMode && query.trim().length >= 2 && localMatches.length > 0)) && !blockedMessage && (
         <div className="flex flex-col gap-6 pt-2 border-t border-zinc-800/80">
           {/* Tier 1: In-App Curated Matches */}
           {localMatches.length > 0 && (
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm sm:text-base font-semibold text-zinc-100">
-                  In-App Curated Library Matches ({localMatches.length})
+                  {isMoviesMode
+                    ? `In-App Christian Movies & Cartoons (${localMatches.length})`
+                    : `In-App Curated Library Matches (${localMatches.length})`}
                 </h3>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {localMatches.map((video) => (
-                  <VideoCard
-                    key={video.id}
-                    video={video}
-                    onSelect={onSelectVideo}
-                    isSaved={savedVideoIds.includes(video.id)}
-                    onToggleSave={onToggleSave}
-                    onSelectChannel={onSelectChannel}
-                  />
+                  <div key={video.id} className="relative">
+                    <VideoCard
+                      video={video}
+                      onSelect={onSelectVideo}
+                      isSaved={savedVideoIds.includes(video.id)}
+                      onToggleSave={onToggleSave}
+                      onSelectChannel={onSelectChannel}
+                    />
+                    {isMoviesMode && (
+                      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-medium text-amber-300/90">
+                        <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">
+                          {isLocalVideoCartoon(video)
+                            ? 'Christian Cartoon / Animation'
+                            : video.is_nigerian_channel
+                            ? 'Nigerian Christian Movie'
+                            : 'International Christian Movie'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Tier 2: Unlimited Global Christian Discovery */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-semibold text-amber-300">
-                  Expanded Global Christian Discovery
-                </h3>
-                {!loadingGlobal && (
-                  <span className="text-xs font-mono text-zinc-400">
-                    ({uniqueGlobalResults.length} results)
-                  </span>
-                )}
+          {/* Tier 2: Unlimited Global Discovery */}
+          {(submittedQuery || loadingGlobal) && (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm sm:text-base font-semibold text-amber-300">
+                    {isMoviesMode
+                      ? 'External Christian Movies & Cartoons Discovered'
+                      : 'Expanded Global Christian Discovery'}
+                  </h3>
+                  {!loadingGlobal && (
+                    <span className="text-xs font-mono text-zinc-400">
+                      ({uniqueGlobalResults.length} movies)
+                    </span>
+                  )}
+                </div>
+                <span className="text-[11px] text-zinc-400">
+                  Plays directly inside the native KINGDOM+ Player &amp; Mini-Player
+                </span>
               </div>
-              <span className="text-[11px] text-zinc-400">
-                Plays directly inside the native KINGDOM+ Player &amp; Mini-Player
-              </span>
-            </div>
 
-            {loadingGlobal ? (
-              <div className="p-8 rounded-xl bg-zinc-950/70 border border-zinc-800/80 flex items-center justify-center gap-3 text-xs sm:text-sm text-zinc-300">
-                <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
-                <span>Searching global Christian ministries, worship altars &amp; gospel libraries...</span>
-              </div>
-            ) : uniqueGlobalResults.length === 0 ? (
-              <div className="p-6 rounded-xl bg-zinc-950/70 border border-zinc-800/80 text-center text-xs sm:text-sm text-zinc-400">
-                No additional global Christian broadcasts matched &ldquo;{submittedQuery}&rdquo;. Try another minister, song title, or biblical topic.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {uniqueGlobalResults.map((video) => (
-                  <VideoCard
-                    key={video.id}
-                    video={video}
-                    onSelect={handleSelectDiscoveredVideo}
-                    isSaved={savedVideoIds.includes(video.id)}
-                    onToggleSave={(id, e) => {
-                      if (onDiscoveredVideoSelected) {
-                        onDiscoveredVideoSelected(video);
-                      }
-                      onToggleSave(id, e);
-                    }}
-                    onSelectChannel={onSelectChannel}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+              {loadingGlobal ? (
+                <div className="p-8 rounded-xl bg-zinc-950/70 border border-zinc-800/80 flex items-center justify-center gap-3 text-xs sm:text-sm text-zinc-300">
+                  <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+                  <span>
+                    {isMoviesMode
+                      ? 'Searching Nigerian & International Christian movies and Bible cartoons...'
+                      : 'Searching global Christian ministries, worship altars & gospel libraries...'}
+                  </span>
+                </div>
+              ) : uniqueGlobalResults.length === 0 ? (
+                <div className="p-6 rounded-xl bg-zinc-950/70 border border-zinc-800/80 text-center text-xs sm:text-sm text-zinc-400">
+                  {isMoviesMode
+                    ? `No external Christian movies or cartoons matched “${submittedQuery}”. Try another film title, Mount Zion movie, or Bible story cartoon.`
+                    : `No additional global Christian broadcasts matched “${submittedQuery}”. Try another minister, song title, or biblical topic.`}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {uniqueGlobalResults.map((video) => (
+                    <div key={video.id} className="relative">
+                      <VideoCard
+                        video={video}
+                        onSelect={handleSelectDiscoveredVideo}
+                        isSaved={savedVideoIds.includes(video.id)}
+                        onToggleSave={(id, e) => {
+                          if (onDiscoveredVideoSelected) {
+                            onDiscoveredVideoSelected(video);
+                          }
+                          onToggleSave(id, e);
+                        }}
+                        onSelectChannel={onSelectChannel}
+                      />
+                      {isMoviesMode && (
+                        <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-medium text-amber-300/90">
+                          <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">
+                            {isLocalVideoCartoon(video)
+                              ? 'Christian Cartoon / Animation'
+                              : video.is_nigerian_channel
+                              ? 'Nigerian Christian Movie'
+                              : 'International Christian Movie'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </section>

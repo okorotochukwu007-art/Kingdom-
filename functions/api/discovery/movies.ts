@@ -2,41 +2,45 @@
 // Enables genre filtering and beyond-library Christian movie search on Cloudflare Pages.
 
 import type { KingdomVideo } from '../../../src/types/kingdom.ts';
-import { searchGlobalChristianVideos } from '../christian-search.ts';
+import {
+  isLikelyChristianMovieOrCartoon,
+  searchGlobalChristianVideos,
+} from '../christian-search.ts';
 
-const GENRE_QUERIES: Record<string, string> = {
-  all: 'Christian full movie faith drama',
-  nigerian: 'Nigerian Christian full movie Mount Zion Bamiloye',
-  african: 'African Christian full movie gospel drama',
-  international: 'International Christian full movie English faith film',
-  biblical: 'Biblical epic movie Bible story full film',
-  'spiritual-warfare': 'Christian spiritual warfare deliverance full movie',
-  'family-dramas': 'Christian family drama full movie marriage faith',
-  romance: 'Christian romance love story full movie',
-  redemption: 'Christian redemption salvation testimony full movie',
-  'faith-miracles': 'Christian faith miracle inspirational full movie',
-  'comedy-action': 'Christian comedy clean gospel drama movie',
+const GENRE_QUERIES: Record<string, { query: string; scope: string }> = {
+  all: { query: 'Christian full movie faith drama', scope: 'movies' },
+  nigerian: { query: 'Nigerian Christian full movie Mount Zion Bamiloye', scope: 'movies-nigerian' },
+  african: { query: 'African Christian full movie gospel drama', scope: 'movies-nigerian' },
+  international: { query: 'International Christian full movie English faith film', scope: 'movies-international' },
+  cartoon: { query: 'Christian Bible story cartoon animated full movie', scope: 'movies-cartoon' },
+  animations: { query: 'Christian Bible story cartoon animated full movie', scope: 'movies-cartoon' },
+  biblical: { query: 'Biblical epic movie Bible story full film', scope: 'movies' },
+  'spiritual-warfare': { query: 'Christian spiritual warfare deliverance full movie', scope: 'movies' },
+  'family-dramas': { query: 'Christian family drama full movie marriage faith', scope: 'movies' },
+  romance: { query: 'Christian romance love story full movie', scope: 'movies' },
+  redemption: { query: 'Christian redemption salvation testimony full movie', scope: 'movies' },
+  'faith-miracles': { query: 'Christian faith miracle inspirational full movie', scope: 'movies' },
+  'comedy-action': { query: 'Christian comedy clean gospel drama movie', scope: 'movies' },
 };
-
-const NON_MOVIE_REGEX =
-  /\b(#shorts|trailer only|official trailer|teaser|reaction video|movie review|explained|recap)\b/i;
 
 export const onRequestGet = async (context?: { request?: Request }): Promise<Response> => {
   const url = context?.request ? new URL(context.request.url) : null;
   const genre = (url?.searchParams.get('genre') || 'all').trim().toLowerCase();
-  const rawQuery = (url?.searchParams.get('query') || '').trim();
+  const rawQuery = (url?.searchParams.get('query') || url?.searchParams.get('q') || '').trim();
 
-  const genreHint = GENRE_QUERIES[genre] || GENRE_QUERIES.all;
-  const searchTerm = rawQuery ? `${rawQuery} ${genre !== 'all' ? genreHint : 'Christian full movie'}` : genreHint;
+  const genreConfig = GENRE_QUERIES[genre] || GENRE_QUERIES.all;
+  const searchTerm = rawQuery ? rawQuery : genreConfig.query;
 
-  const result = await searchGlobalChristianVideos(searchTerm, 'movies');
-  const filtered: KingdomVideo[] = (result.results || []).filter((v) => {
-    if (!v?.title || NON_MOVIE_REGEX.test(v.title)) return false;
-    if (typeof v.duration_seconds === 'number' && v.duration_seconds > 0 && v.duration_seconds < 300) {
-      return false;
-    }
-    return true;
-  });
+  const result = await searchGlobalChristianVideos(searchTerm, genreConfig.scope);
+  const filtered: KingdomVideo[] = (result.results || []).filter((v) =>
+    isLikelyChristianMovieOrCartoon(
+      v.title || '',
+      v.channel_title || '',
+      v.description || '',
+      v.duration_seconds ?? null,
+      genreConfig.scope
+    )
+  );
 
   return new Response(
     JSON.stringify({
