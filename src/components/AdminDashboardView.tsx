@@ -6,6 +6,7 @@ import {
   Copy,
   Database,
   ExternalLink,
+  Globe,
   History,
   Link2,
   Plus,
@@ -17,6 +18,7 @@ import {
   TrendingUp,
   X,
 } from 'lucide-react';
+import { AdminTrafficByCountryPanel } from './AdminTrafficByCountryPanel.tsx';
 import {
   ChristianLivingSubcategorySlug,
   ContentCategory,
@@ -79,8 +81,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onPreviewVideo,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'videos' | 'channels' | 'categories' | 'discovery' | 'moderation' | 'users' | 'supabase'
-  >('videos');
+    'traffic' | 'videos' | 'channels' | 'categories' | 'discovery' | 'moderation' | 'users' | 'supabase'
+  >('traffic');
 
   const [systemStatus, setSystemStatus] = useState<SystemConfigStatus | null>(null);
   const [marriageCollections, setMarriageCollections] = useState<MarriageCollectionConfig[]>([]);
@@ -888,6 +890,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {/* Navigation Tabs */}
       <div className="flex items-center gap-1.5 overflow-x-auto border-b border-zinc-800 pb-3">
         {[
+          { id: 'traffic', label: 'Visitors by Country' },
           { id: 'videos', label: `Videos & Performance (${videos.length})` },
           { id: 'channels', label: `Approved Creators (${channels.length})` },
           { id: 'categories', label: `Categories (${categories.length})` },
@@ -903,16 +906,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             key={tab.id}
             type="button"
             onClick={() => setActiveTab(tab.id as any)}
-            className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
               activeTab === tab.id
                 ? 'bg-amber-500 text-zinc-950 font-semibold'
                 : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800 border border-zinc-800'
             }`}
           >
-            {tab.label}
+            {tab.id === 'traffic' && <Globe className="w-3.5 h-3.5" />}
+            <span>{tab.label}</span>
           </button>
         ))}
       </div>
+
+      {/* TAB 0: REAL HUMAN VISITORS BY COUNTRY (CF-IPCOUNTRY + SUPABASE) */}
+      {activeTab === 'traffic' && <AdminTrafficByCountryPanel />}
 
       {/* TAB 1: VIDEOS, MANUAL URL IMPORT & PERFORMANCE MONITORING */}
       {activeTab === 'videos' && (

@@ -36,6 +36,7 @@ import { YouTubePlayerModal } from './components/YouTubePlayerModal.tsx';
 import { PWAInstallButton } from './components/PWAInstallButton.tsx';
 import { getActiveUserSession, logoutUser } from './utils/authService.ts';
 import { APP_TOAST_EVENT, shareKingdomVideo } from './utils/shareVideo.ts';
+import { trackHumanPageVisit } from './utils/visitorAnalytics.ts';
 import {
   DiscoveryFilterScope,
   IntelligentDiscoveryModal,
@@ -620,6 +621,11 @@ export default function App() {
       window.removeEventListener('pagehide', handleBeforeUnload);
     };
   }, [currentUser?.id, currentUser?.email, authToken]);
+
+  // Privacy-friendly human visitor analytics (Cloudflare CF-IPCountry -> Supabase)
+  useEffect(() => {
+    trackHumanPageVisit(activeView, window.location.pathname);
+  }, [activeView, selectedCategorySlug, selectedChannelId]);
 
   const handleAuthSuccess = (token: string, user: UserProfile) => {
     localStorage.setItem('kingdom_plus_token', token);

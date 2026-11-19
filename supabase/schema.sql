@@ -595,4 +595,37 @@ create policy "Discovered videos read" on public.discovered_videos for select us
 drop policy if exists "Discovered videos manage" on public.discovered_videos;
 create policy "Discovered videos manage" on public.discovered_videos for all using (true) with check (true);
 
+-- ============================================================================
+-- 16. REAL HUMAN VISITOR ANALYTICS BY COUNTRY (CLOUDFLARE CF-IPCOUNTRY + SUPABASE)
+--     Privacy-friendly: stores zero raw IP addresses or personal details
+-- ============================================================================
+create table if not exists public.visitor_pageviews (
+  id uuid primary key default gen_random_uuid(),
+  visitor_id text not null,
+  session_id text not null,
+  country_code text not null default 'XX',
+  country_name text not null default 'Unknown',
+  city text not null default '',
+  region text not null default '',
+  page_path text not null default '/',
+  page_view text not null default 'streaming',
+  referrer_host text not null default '',
+  device_type text not null default 'desktop',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_visitor_pageviews_created_at
+  on public.visitor_pageviews(created_at desc);
+create index if not exists idx_visitor_pageviews_country
+  on public.visitor_pageviews(country_code, created_at desc);
+create index if not exists idx_visitor_pageviews_visitor
+  on public.visitor_pageviews(visitor_id, created_at desc);
+
+alter table public.visitor_pageviews enable row level security;
+
+drop policy if exists "Visitor pageviews insert" on public.visitor_pageviews;
+create policy "Visitor pageviews insert" on public.visitor_pageviews for insert with check (true);
+drop policy if exists "Visitor pageviews read" on public.visitor_pageviews;
+create policy "Visitor pageviews read" on public.visitor_pageviews for select using (true);
+
 

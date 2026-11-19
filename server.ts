@@ -36,6 +36,19 @@ import {
 import { discoverDailyFreshVideos } from './functions/api/daily-sync.ts';
 import { searchGlobalChristianVideos } from './functions/api/christian-search.ts';
 import {
+  buildTrafficSummary,
+  detectDeviceType,
+  fetchVisitsFromSupabase,
+  getRangeStartIso,
+  insertVisitIntoSupabase,
+  isLikelyBotUserAgent,
+  normalizeCountryCode,
+  resolveCountryName,
+  resolveSupabaseCredentials,
+  sanitizeReferrerHost,
+  VisitorPageviewRow,
+} from './functions/api/analytics/helpers.ts';
+import {
   executeIntelligentDiscovery,
   searchChristianMoviesBeyondLibrary,
   searchChristianMinisterBeyondCatalogue,
@@ -279,6 +292,149 @@ app.get('/api/admin/sql-schema', (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// ============================================================================
+// 1b. REAL HUMAN VISITOR ANALYTICS BY COUNTRY (CF-IPCOUNTRY + SUPABASE)
+// ============================================================================
+const LOCAL_ANALYTICS_PATH = path.resolve(process.cwd(), '.data/visitor-analytics.json');
+
+function loadLocalVisitorAnalytics(): VisitorPageviewRow[] {
+  try {
+    if (fs.existsSync(LOCAL_ANALYTICS_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(LOCAL_ANALYTICS_PATH, 'utf-8'));
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch {
+    // Ignore read error
+  }
+  return [];
+}
+
+function appendLocalVisitorAnalytics(row: VisitorPageviewRow): void {
+  try {
+    fs.mkdirSync(path.dirname(LOCAL_ANALYTICS_PATH), { recursive: true });
+    const current = loadLocalVisitorAnalytics();
+    current.unshift(row);
+    fs.writeFileSync(LOCAL_ANALYTICS_PATH, JSON.stringify(current.slice(0, 5000)), 'utf-8');
+  } catch {
+    // Ignore local write error
+  }
+}
+
+app.post('/api/analytics/visit', async (req: Request, res: Response) => {
+  try {
+    const ua = String(req.headers['user-agent'] || '');
+    const body = (req.body || {}) as Record<string, unknown>;
+
+    if (isLikelyBotUserAgent(ua) || body.isWebdriver === true) {
+      res.json({ ok: true, recorded: false, reason: 'bot_filtered' });
+      return;
+    }
+
+    const visitorId = String(body.visitorId || '').trim().slice(0, 80);
+    const sessionId = String(body.sessionId || '').trim().slice(0, 80);
+    if (!visitorId || !sessionId) {
+      res.status(400).json({ ok: false, recorded: false, reason: 'missing_ids' });
+      return;
+    }
+
+    const rawCountry = String(
+      req.headers['cf-ipcountry'] ||
+        req.headers['x-vercel-ip-country'] ||
+        req.headers['x-country-code'] ||
+        'XX'
+    );
+    const countryCode = normalizeCountryCode(rawCountry);
+    const countryName = resolveCountryName(countryCode);
+    const city = String(req.headers['cf-ipcity'] || '').trim().slice(0, 80);
+    const region = String(req.headers['cf-region'] || '').trim().slice(0, 80);
+    const pagePath = String(body.pagePath || '/').trim().slice(0, 200) || '/';
+    const pageView = String(body.pageView || 'streaming').trim().slice(0, 60) || 'streaming';
+    const referrerHost = sanitizeReferrerHost(
+      String(body.referrer || ''),
+      String(req.headers.host || '')
+    );
+    const deviceType = detectDeviceType(ua);
+
+    const rowPayload = {
+      visitor_id: visitorId,
+      session_id: sessionId,
+      country_code: countryCode,
+      country_name: countryName,
+      city,
+      region,
+      page_path: pagePath,
+      page_view: pageView,
+      referrer_host: referrerHost,
+      device_type: deviceType,
+    };
+
+    const { url, key } = resolveSupabaseCredentials(process.env as Record<string, string | undefined>);
+    if (url && key) {
+      const insertResult = await insertVisitIntoSupabase(url, key, rowPayload);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        ok: insertResult.ok,
+        recorded: insertResult.ok,
+        storage: 'supabase',
+        tableMissing: insertResult.tableMissing || false,
+        countryCode,
+        countryName,
+      });
+      return;
+    }
+
+    appendLocalVisitorAnalytics({
+      ...rowPayload,
+      created_at: new Date().toISOString(),
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ok: true,
+      recorded: true,
+      storage: 'local',
+      countryCode,
+      countryName,
+    });
+  } catch (err) {
+    res.json({ ok: false, recorded: false, error: (err as Error).message });
+  }
+});
+
+app.get('/api/analytics/summary', async (req: Request, res: Response) => {
+  const rawRange = String(req.query.range || '7d').toLowerCase();
+  const range: '24h' | '7d' | '30d' | 'all' =
+    rawRange === '24h' || rawRange === '7d' || rawRange === '30d' || rawRange === 'all'
+      ? rawRange
+      : '7d';
+  const excludeVisitorId = String(req.query.excludeVisitorId || '').trim() || undefined;
+
+  res.setHeader('Cache-Control', 'no-store');
+
+  const { url, key } = resolveSupabaseCredentials(process.env as Record<string, string | undefined>);
+  if (url && key) {
+    const fetched = await fetchVisitsFromSupabase(url, key, range);
+    if (!fetched.ok) {
+      res.json({
+        ...buildTrafficSummary([], range, 'supabase'),
+        ok: false,
+        tableMissing: Boolean(fetched.tableMissing),
+        error: fetched.error || 'Could not query visitor analytics.',
+      });
+      return;
+    }
+    res.json(buildTrafficSummary(fetched.rows, range, 'supabase', excludeVisitorId));
+    return;
+  }
+
+  const allLocal = loadLocalVisitorAnalytics();
+  const sinceIso = getRangeStartIso(range);
+  const filteredLocal = sinceIso
+    ? allLocal.filter((r) => (r.created_at || '') >= sinceIso)
+    : allLocal;
+
+  res.json(buildTrafficSummary(filteredLocal, range, 'local', excludeVisitorId));
 });
 
 // ============================================================================
