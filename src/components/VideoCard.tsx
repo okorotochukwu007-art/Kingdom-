@@ -51,13 +51,23 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
         )
       : 0;
 
-  // Concise single-label kicker (avoids stacking Category + Long Subcategory + Country)
+  // Concise single-label kicker (shows Ministry · Programme for featured live pastors)
+  const liveKicker =
+    isGenuinelyLive && (video.ministry_name || video.programme_name)
+      ? video.ministry_name &&
+        video.programme_name &&
+        video.ministry_name.toLowerCase() !== video.programme_name.toLowerCase()
+        ? `${video.ministry_name} · ${video.programme_name}`
+        : video.programme_name || video.ministry_name || video.primary_category_name
+      : null;
+
   const conciseKicker =
-    (video.primary_category_slug === 'worship-praise' ||
+    liveKicker ||
+    ((video.primary_category_slug === 'worship-praise' ||
       video.primary_category_slug === 'christian-living') &&
     video.subcategory_label
       ? video.subcategory_label
-      : video.primary_category_name;
+      : video.primary_category_name);
 
   const cardThumbSrc = getOptimizedThumbnailUrl(video, isDataSaverActive, 'card');
   const avatarSrc = getOptimizedAvatarUrl(video.channel_avatar_url, isDataSaverActive);
@@ -106,9 +116,9 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
 
         {/* Genuinely Live Broadcast Indicator */}
         {isGenuinelyLive && (
-          <span className="absolute top-2.5 left-2.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-semibold tracking-wide">
+          <span className="absolute top-2.5 left-2.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold tracking-wide shadow-md">
             <Radio className="w-3 h-3 animate-pulse" />
-            <span>LIVE</span>
+            <span>LIVE NOW</span>
           </span>
         )}
 
@@ -185,7 +195,7 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
             {!avatarError && avatarSrc ? (
               <img
                 src={avatarSrc}
-                alt={video.artist_name || video.channel_title}
+                alt={video.pastor_name || video.artist_name || video.channel_title}
                 loading="lazy"
                 decoding="async"
                 referrerPolicy="no-referrer"
@@ -194,31 +204,43 @@ const VideoCardComponent: React.FC<VideoCardProps> = ({
               />
             ) : (
               <div className="w-5 h-5 rounded-full bg-zinc-800 text-amber-400 text-[10px] font-semibold flex items-center justify-center shrink-0">
-                {(video.artist_name || video.channel_title).charAt(0)}
+                {(video.pastor_name || video.artist_name || video.channel_title).charAt(0)}
               </div>
             )}
             <button
               type="button"
               onClick={(e) => {
-                if (onSelectChannel) {
+                if (onSelectChannel && !video.channel_id.startsWith('live-ch-')) {
                   e.stopPropagation();
                   onSelectChannel(video.channel_id);
                 }
               }}
               className="text-xs font-medium text-zinc-300 hover:text-amber-400 transition-colors truncate text-left"
             >
-              {video.artist_name || video.channel_title}
+              {video.pastor_name || video.artist_name || video.channel_title}
             </button>
           </div>
 
           {/* Concise Stats Row */}
-          <div className="flex items-center gap-1 text-[11px] text-zinc-400 font-mono tabular-nums shrink-0">
-            <span>{formatCompactNumber(video.view_count)} views</span>
-            <span aria-hidden="true">·</span>
-            <span className="font-sans text-zinc-500">
-              {formatRelativeDate(video.published_at)}
-            </span>
-          </div>
+          {isGenuinelyLive ? (
+            <div className="flex items-center gap-1 text-[11px] font-mono tabular-nums shrink-0">
+              {typeof video.concurrent_viewers === 'number' && video.concurrent_viewers > 0 ? (
+                <span className="text-red-400 font-semibold">
+                  {formatCompactNumber(video.concurrent_viewers)} watching
+                </span>
+              ) : (
+                <span className="text-red-400 font-semibold">LIVE NOW</span>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 text-[11px] text-zinc-400 font-mono tabular-nums shrink-0">
+              <span>{formatCompactNumber(video.view_count)} views</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-sans text-zinc-500">
+                {formatRelativeDate(video.published_at)}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </article>

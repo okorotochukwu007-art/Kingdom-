@@ -45,9 +45,14 @@ interface RealTimeLiveStreamItem {
   youtubeChannelId: string;
   matchedKingdomChannelId: string | null;
   watchingText: string;
-  watchingCount: number;
+  watchingCount: number | null;
   avatarUrl: string;
   thumbnailUrl: string;
+  isFeaturedPastor?: boolean;
+  pastorName?: string;
+  ministryName?: string;
+  programmeName?: string;
+  isNigerian?: boolean;
 }
 
 interface ScheduledProgram {
@@ -320,34 +325,52 @@ function convertLiveStreamToKingdomVideo(
     ? channels.find((c) => c.id === item.matchedKingdomChannelId)
     : undefined;
 
+  const pastorName = item.pastorName || matchedCh?.speaker_name || undefined;
+  const ministryName = item.ministryName || matchedCh?.ministry_name || matchedCh?.title || item.channelTitle;
+  const programmeName = item.programmeName || undefined;
+  const concurrentViewers =
+    typeof item.watchingCount === 'number' && item.watchingCount > 0 ? item.watchingCount : null;
+  const viewerDisplayCount = concurrentViewers ?? 0;
+
   return {
     id: `realtime-live-${item.videoId}`,
     youtube_video_id: item.videoId,
     channel_id: matchedCh?.id || `live-ch-${item.youtubeChannelId || item.videoId}`,
-    channel_title: matchedCh?.title || item.channelTitle,
+    channel_title: ministryName,
     channel_handle: 'KINGDOM+ Verified',
     channel_type: matchedCh?.channel_type || 'ministry',
+    artist_name: pastorName || ministryName,
+    pastor_name: pastorName,
+    ministry_name: ministryName,
+    programme_name: programmeName,
+    concurrent_viewers: concurrentViewers,
+    is_featured_pastor_live: Boolean(item.isFeaturedPastor),
     channel_avatar_url: matchedCh?.avatar_url || item.avatarUrl || '',
-    is_nigerian_channel: true,
+    is_nigerian_channel:
+      typeof item.isNigerian === 'boolean' ? item.isNigerian : Boolean(matchedCh?.is_nigerian ?? true),
     is_official_verified: true,
     primary_category_id: 'cat-live-special-broadcasts',
     primary_category_slug: 'live-special-broadcasts',
     primary_category_name: 'Live & Special Broadcasts',
     secondary_category_slugs: [],
-    subcategory_label: `🔴 LIVE · ${item.watchingText}`,
+    subcategory_label: programmeName
+      ? `${ministryName} · ${programmeName}`
+      : `LIVE NOW · ${item.watchingText}`,
     title: item.title,
-    description: `Real-time active live broadcast from ${item.channelTitle} (${item.watchingText}).`,
+    description: `${pastorName ? `${pastorName} — ` : ''}${ministryName}${
+      programmeName ? ` (${programmeName})` : ''
+    } is streaming live right now${concurrentViewers ? ` (${item.watchingText})` : ''}.`,
     thumbnail_high_url: item.thumbnailUrl,
     thumbnail_maxres_url: `https://i.ytimg.com/vi/${item.videoId}/maxresdefault.jpg`,
     published_at: new Date().toISOString(),
     duration_seconds: null,
-    view_count: item.watchingCount,
-    like_count: Math.max(10, Math.round(item.watchingCount * 0.25)),
-    likes_verified: true,
+    view_count: viewerDisplayCount,
+    like_count: 0,
+    likes_verified: false,
     comment_count: null,
-    views_per_day: item.watchingCount,
+    views_per_day: viewerDisplayCount,
     engagement_rate: 100,
-    trending_score: 100 + item.watchingCount,
+    trending_score: (item.isFeaturedPastor ? 10_000_000 : 1_000_000) + viewerDisplayCount,
     evergreen_score: 95,
     live_broadcast_content: 'live',
     is_live_now: true,
@@ -413,6 +436,7 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
 
   const firedAlertKeysRef = useRef<Set<string>>(new Set());
   const activeSearchTokenRef = useRef<number>(0);
+  const hasCompletedInitialLiveCheckRef = useRef<boolean>(false);
   const reminderIds = subscription.programIds;
 
   useEffect(() => {
@@ -424,14 +448,16 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     return () => window.clearInterval(timer);
   }, []);
 
-  const fetchRealTimeLiveStreams = async () => {
+  const fetchRealTimeLiveStreams = async (forceRefresh = false) => {
     setLoadingLive(true);
     try {
-      const res = await fetch('/api/live-check');
+      const endpoint = forceRefresh ? '/api/live-check?refresh=1' : '/api/live-check';
+      const res = await fetch(endpoint);
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (Array.isArray(data?.liveStreams)) {
+          hasCompletedInitialLiveCheckRef.current = true;
           setLiveStreamsRaw(data.liveStreams);
         }
         if (data?.checkedAt) {
@@ -530,10 +556,12 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
   }, [liveStreamsRaw, channels]);
 
   useEffect(() => {
-    if (onActiveLiveStreamsChange && activeRealTimeLiveVideos.length > 0) {
+    // Always sync with homepage Hero Spotlight once the live check completes,
+    // including clearing LIVE NOW status automatically when broadcasts end.
+    if (onActiveLiveStreamsChange && hasCompletedInitialLiveCheckRef.current) {
       onActiveLiveStreamsChange(activeRealTimeLiveVideos);
     }
-  }, [activeRealTimeLiveVideos]);
+  }, [activeRealTimeLiveVideos, onActiveLiveStreamsChange]);
 
   const requestBrowserPushPermission = async (): Promise<boolean> => {
     if (typeof window === 'undefined' || !('Notification' in window)) {
@@ -742,7 +770,10 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
     const localMatches = activeRealTimeLiveVideos.filter(
       (v) =>
         v.title.toLowerCase().includes(q) ||
-        v.channel_title.toLowerCase().includes(q)
+        v.channel_title.toLowerCase().includes(q) ||
+        (v.pastor_name || '').toLowerCase().includes(q) ||
+        (v.ministry_name || '').toLowerCase().includes(q) ||
+        (v.programme_name || '').toLowerCase().includes(q)
     );
 
     const seenYtIds = new Set(localMatches.map((v) => v.youtube_video_id));
@@ -857,7 +888,7 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
                 if (searchQuery.trim().length >= 2) {
                   searchGlobalActiveLiveStreams(searchQuery);
                 } else {
-                  fetchRealTimeLiveStreams();
+                  fetchRealTimeLiveStreams(true);
                 }
               }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 transition-colors shrink-0"
@@ -880,14 +911,14 @@ export const LiveSpecialBroadcastsView: React.FC<LiveSpecialBroadcastsViewProps>
             <span>
               {searchingRemoteLive && searchQuery.trim()
                 ? `Searching active Christian live broadcasts for "${searchQuery.trim()}"...`
-                : 'Scanning ministry channels in real time for active Christian live broadcasts...'}
+                : 'Scanning official pastor & ministry channels in real time for active live broadcasts...'}
             </span>
           </div>
         ) : filteredActiveLiveVideos.length === 0 ? (
           <div className="p-8 rounded-2xl bg-[#121215] border border-zinc-800 text-center text-xs sm:text-sm text-zinc-400">
             {searchQuery.trim()
               ? `No active Christian live streams matched "${searchQuery.trim()}" right now. Try another ministry name or check the upcoming WAT schedule below.`
-              : 'No active real-time live streams matched your search right now. Check the upcoming WAT countdown schedule below.'}
+              : 'No featured pastor or ministry is broadcasting live at this moment. Active live broadcasts appear here automatically the moment they go live.'}
           </div>
         ) : (
           <div className="flex flex-col gap-3">

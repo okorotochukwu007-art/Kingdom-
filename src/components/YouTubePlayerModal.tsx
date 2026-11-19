@@ -2500,12 +2500,39 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                       </div>
                       <div className="min-w-0">
                         <div className="text-xs sm:text-sm font-semibold text-zinc-100 group-hover:text-amber-400 transition-colors truncate">
-                          {video.artist_name || video.channel_title}
+                          {video.pastor_name || video.artist_name || video.channel_title}
                         </div>
-                        <div className="text-[11px] text-zinc-400 flex items-center gap-1.5 font-mono tabular-nums">
-                          <span>{formatCompactNumber(video.view_count)} views</span>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-sans">{formatRelativeDate(video.published_at)}</span>
+                        <div className="text-[11px] text-zinc-400 flex items-center flex-wrap gap-1.5 font-mono tabular-nums">
+                          {video.is_live_now && video.live_broadcast_content === 'live' ? (
+                            <>
+                              <span className="font-sans text-red-400 font-semibold">LIVE NOW</span>
+                              {(video.ministry_name || video.channel_title) && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="font-sans text-zinc-300 truncate">
+                                    {video.ministry_name || video.channel_title}
+                                  </span>
+                                </>
+                              )}
+                              {typeof video.concurrent_viewers === 'number' &&
+                                video.concurrent_viewers > 0 && (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="text-zinc-200">
+                                      {formatCompactNumber(video.concurrent_viewers)} watching
+                                    </span>
+                                  </>
+                                )}
+                            </>
+                          ) : (
+                            <>
+                              <span>{formatCompactNumber(video.view_count)} views</span>
+                              <span aria-hidden="true">·</span>
+                              <span className="font-sans">
+                                {formatRelativeDate(video.published_at)}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>

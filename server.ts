@@ -529,7 +529,9 @@ app.get('/api/live-check', async (req: Request, res: Response) => {
     return;
   }
 
-  if (cachedLiveStreams && now - lastLiveCheckMs < 45_000) {
+  const forceRefresh = String(req.query.refresh || '') === '1';
+
+  if (!forceRefresh && cachedLiveStreams && now - lastLiveCheckMs < 45_000) {
     res.setHeader('Cache-Control', 'public, max-age=45');
     res.json(cachedLiveStreams);
     return;
@@ -542,7 +544,7 @@ app.get('/api/live-check', async (req: Request, res: Response) => {
   };
   lastLiveCheckMs = now;
 
-  res.setHeader('Cache-Control', 'public, max-age=45');
+  res.setHeader('Cache-Control', forceRefresh ? 'no-cache' : 'public, max-age=45');
   res.json(cachedLiveStreams);
 });
 

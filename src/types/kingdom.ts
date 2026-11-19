@@ -193,6 +193,11 @@ export interface KingdomVideo {
   quality_score?: number;
   live_broadcast_content?: 'live' | 'upcoming' | 'none';
   is_live_now?: boolean;
+  is_featured_pastor_live?: boolean;
+  pastor_name?: string;
+  ministry_name?: string;
+  programme_name?: string;
+  concurrent_viewers?: number | null;
   is_embeddable: boolean;
   is_available: boolean;
   approval_status: VideoApprovalStatus;

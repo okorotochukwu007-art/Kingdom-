@@ -801,6 +801,16 @@ export default function App() {
   }, [activeLiveStreams, streamingVideos]);
 
   const currentHero = heroCandidates[heroIndex] || heroCandidates[0] || null;
+  const isCurrentHeroLive = Boolean(
+    currentHero?.is_live_now && currentHero.live_broadcast_content === 'live'
+  );
+
+  // Reset heroIndex safely whenever active live broadcasts start or end
+  useEffect(() => {
+    if (heroIndex >= heroCandidates.length) {
+      setHeroIndex(0);
+    }
+  }, [heroCandidates.length, heroIndex]);
 
   // ==========================================================================
   // DEDUPLICATED HOMEPAGE COLLECTIONS ALIGNED TO THE 8 APPROVED MAIN CATEGORIES
@@ -1279,10 +1289,10 @@ export default function App() {
               <div className="relative z-10 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 sm:py-12 lg:py-16 grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-end">
                 <div className="lg:col-span-8 min-w-0 w-full flex flex-col gap-2.5 sm:gap-3.5">
                   {/* Concise 1-Line Kicker */}
-                  <div className="inline-flex self-start items-center flex-wrap gap-2 px-2.5 py-1 rounded-full bg-black/70 border border-white/10 text-xs font-medium text-amber-400">
-                    {currentHero?.is_live_now && currentHero.live_broadcast_content === 'live' ? (
-                      <span className="inline-flex items-center gap-1.5 text-red-400 font-semibold">
-                        <Radio className="w-3.5 h-3.5 animate-pulse" />
+                  <div className="inline-flex self-start items-center flex-wrap gap-2 px-2.5 py-1 rounded-full bg-black/75 border border-white/10 text-xs font-medium text-amber-400">
+                    {isCurrentHeroLive ? (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 -ml-1 rounded-full bg-red-600 text-white text-[11px] font-bold tracking-wide">
+                        <Radio className="w-3 h-3 animate-pulse" />
                         <span>LIVE NOW</span>
                       </span>
                     ) : (
@@ -1290,10 +1300,20 @@ export default function App() {
                     )}
                     {currentHero && (
                       <>
-                        <span aria-hidden="true" className="text-zinc-500">·</span>
-                        <span className="text-zinc-100">
-                          {currentHero.artist_name || currentHero.channel_title}
+                        {!isCurrentHeroLive && (
+                          <span aria-hidden="true" className="text-zinc-500">·</span>
+                        )}
+                        <span className="text-zinc-100 font-semibold">
+                          {currentHero.pastor_name || currentHero.artist_name || currentHero.channel_title}
                         </span>
+                        {isCurrentHeroLive && currentHero.programme_name && (
+                          <>
+                            <span aria-hidden="true" className="text-zinc-500">·</span>
+                            <span className="text-amber-300 font-medium">
+                              {currentHero.programme_name}
+                            </span>
+                          </>
+                        )}
                       </>
                     )}
                   </div>
@@ -1309,11 +1329,30 @@ export default function App() {
 
                   {currentHero && (
                     <div className="flex items-center flex-wrap gap-x-2.5 gap-y-1 text-xs font-mono tabular-nums text-zinc-200 drop-shadow">
-                      <span>{formatCompactNumber(currentHero.view_count)} views</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-sans text-zinc-300">
-                        {formatRelativeDate(currentHero.published_at)}
-                      </span>
+                      {isCurrentHeroLive ? (
+                        <>
+                          <span className="font-sans font-medium text-zinc-100">
+                            {currentHero.ministry_name || currentHero.channel_title}
+                          </span>
+                          {typeof currentHero.concurrent_viewers === 'number' &&
+                            currentHero.concurrent_viewers > 0 && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="text-red-400 font-semibold">
+                                  {formatCompactNumber(currentHero.concurrent_viewers)} watching now
+                                </span>
+                              </>
+                            )}
+                        </>
+                      ) : (
+                        <>
+                          <span>{formatCompactNumber(currentHero.view_count)} views</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-sans text-zinc-300">
+                            {formatRelativeDate(currentHero.published_at)}
+                          </span>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -1325,7 +1364,7 @@ export default function App() {
                         className="inline-flex items-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 shadow-[0_8px_24px_rgba(245,158,11,0.35)] active:scale-95"
                       >
                         <Play className="w-4 h-4 fill-current" />
-                        <span>Watch Now</span>
+                        <span>{isCurrentHeroLive ? 'Watch Live Now' : 'Watch Now'}</span>
                       </button>
 
                       <button
@@ -1362,35 +1401,56 @@ export default function App() {
                 {/* Right 4 Columns: Horizontal Swipeable on Mobile, Vertical Stack on Desktop */}
                 {heroCandidates.length > 1 && (
                   <div className="lg:col-span-4 min-w-0 w-full flex lg:flex-col gap-2 overflow-x-auto no-scrollbar lg:bg-black/65 lg:border lg:border-white/10 rounded-xl lg:p-3">
-                    {heroCandidates.map((cand, idx) => (
-                      <button
-                        key={cand.id}
-                        type="button"
-                        onClick={() => setHeroIndex(idx)}
-                        className={`min-w-[220px] lg:min-w-0 lg:w-full text-left p-2 rounded-xl transition-colors flex items-center gap-2.5 shrink-0 ${
-                          idx === heroIndex
-                            ? 'bg-amber-500/25 border border-amber-400/60 shadow-lg'
-                            : 'bg-black/75 lg:bg-transparent hover:bg-zinc-900/70 border border-white/10 lg:border-transparent'
-                        }`}
-                      >
-                        <img
-                          src={getOptimizedThumbnailUrl(cand, isDataSaverActive, 'mini')}
-                          alt={cand.title}
-                          loading="lazy"
-                          decoding="async"
-                          referrerPolicy="no-referrer"
-                          className="w-12 sm:w-14 aspect-video rounded-md object-cover bg-zinc-900 shrink-0"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium text-zinc-100 truncate">
-                            {cand.title}
+                    {heroCandidates.map((cand, idx) => {
+                      const candIsLive = Boolean(
+                        cand.is_live_now && cand.live_broadcast_content === 'live'
+                      );
+                      return (
+                        <button
+                          key={cand.id}
+                          type="button"
+                          onClick={() => setHeroIndex(idx)}
+                          className={`min-w-[220px] lg:min-w-0 lg:w-full text-left p-2 rounded-xl transition-colors flex items-center gap-2.5 shrink-0 ${
+                            idx === heroIndex
+                              ? 'bg-amber-500/25 border border-amber-400/60 shadow-lg'
+                              : 'bg-black/75 lg:bg-transparent hover:bg-zinc-900/70 border border-white/10 lg:border-transparent'
+                          }`}
+                        >
+                          <div className="relative w-12 sm:w-14 aspect-video rounded-md overflow-hidden bg-zinc-900 shrink-0">
+                            <img
+                              src={getOptimizedThumbnailUrl(cand, isDataSaverActive, 'mini')}
+                              alt={cand.title}
+                              loading="lazy"
+                              decoding="async"
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover"
+                            />
+                            {candIsLive && (
+                              <span className="absolute top-0.5 left-0.5 px-1 py-px rounded bg-red-600 text-[8px] font-bold text-white leading-tight">
+                                LIVE
+                              </span>
+                            )}
                           </div>
-                          <div className="text-[10px] text-zinc-300 truncate font-mono tabular-nums">
-                            {cand.channel_title}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-medium text-zinc-100 truncate">
+                              {cand.title}
+                            </div>
+                            <div className="text-[10px] text-zinc-300 truncate flex items-center gap-1.5">
+                              <span className="truncate">
+                                {cand.pastor_name || cand.ministry_name || cand.channel_title}
+                              </span>
+                              {candIsLive &&
+                                typeof cand.concurrent_viewers === 'number' &&
+                                cand.concurrent_viewers > 0 && (
+                                  <span className="text-red-400 font-mono tabular-nums shrink-0">
+                                    · {formatCompactNumber(cand.concurrent_viewers)}
+                                  </span>
+                                )}
+                            </div>
                           </div>
-                        </div>
-                      </button>
-                    ))}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
