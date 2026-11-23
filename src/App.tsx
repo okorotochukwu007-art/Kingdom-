@@ -68,6 +68,13 @@ import {
   getOptimizedAvatarUrl,
   getOptimizedThumbnailUrl,
 } from './utils/dataSaver.ts';
+import {
+  loadGuestSavedVideoIds,
+  loadGuestSavedVideosMap,
+  loadGuestWatchHistory,
+  toggleGuestSavedVideo,
+  upsertGuestWatchHistory,
+} from './utils/guestLibrary.ts';
 
 type NavView =
   | 'streaming'
@@ -245,8 +252,13 @@ export default function App() {
   >([]);
   const [channels, setChannels] = useState<KingdomChannel[]>([]);
   const [videos, setVideos] = useState<KingdomVideo[]>([]);
-  const [watchHistory, setWatchHistory] = useState<WatchHistoryEntry[]>([]);
-  const [savedVideoIds, setSavedVideoIds] = useState<string[]>([]);
+  const [watchHistory, setWatchHistory] = useState<WatchHistoryEntry[]>(() =>
+    loadGuestWatchHistory()
+  );
+  const [savedVideoIds, setSavedVideoIds] = useState<string[]>(() =>
+    loadGuestSavedVideoIds()
+  );
+  const [showAllSavedWatchlist, setShowAllSavedWatchlist] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemConfigStatus | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
 
@@ -267,7 +279,6 @@ export default function App() {
   );
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [pendingVideoToPlay, setPendingVideoToPlay] = useState<KingdomVideo | null>(null);
 
   // Intelligent Discovery Modal state across the entire app
   const [isDiscoveryModalOpen, setIsDiscoveryModalOpen] = useState(() =>
@@ -360,9 +371,18 @@ export default function App() {
         setChristianLivingSubcategories(data.christianLivingSubcategories);
       }
       if (Array.isArray(data.channels)) setChannels(data.channels);
-      if (Array.isArray(data.videos)) setVideos(data.videos);
-      if (Array.isArray(data.watchHistory)) setWatchHistory(data.watchHistory);
-      if (Array.isArray(data.savedVideoIds)) setSavedVideoIds(data.savedVideoIds);
+      const nextVideos: KingdomVideo[] = Array.isArray(data.videos) ? data.videos : [];
+      if (nextVideos.length > 0) setVideos(nextVideos);
+      if (token && Array.isArray(data.watchHistory)) {
+        setWatchHistory(data.watchHistory);
+      } else if (!token) {
+        setWatchHistory(loadGuestWatchHistory(nextVideos));
+      }
+      if (token && Array.isArray(data.savedVideoIds)) {
+        setSavedVideoIds(data.savedVideoIds);
+      } else if (!token) {
+        setSavedVideoIds(loadGuestSavedVideoIds());
+      }
       if (data.systemStatus) setSystemStatus(data.systemStatus);
     } catch (err) {
       try {
@@ -375,7 +395,12 @@ export default function App() {
           setChristianLivingSubcategories(data.christianLivingSubcategories);
         }
         if (Array.isArray(data.channels)) setChannels(data.channels);
-        if (Array.isArray(data.videos)) setVideos(data.videos);
+        const snapVideos: KingdomVideo[] = Array.isArray(data.videos) ? data.videos : [];
+        if (snapVideos.length > 0) setVideos(snapVideos);
+        if (!token) {
+          setWatchHistory(loadGuestWatchHistory(snapVideos));
+          setSavedVideoIds(loadGuestSavedVideoIds());
+        }
       } catch {
         console.error('Failed to load catalog:', err);
       }
@@ -395,6 +420,8 @@ export default function App() {
         } else {
           setAuthToken(null);
           setCurrentUser(null);
+          setSavedVideoIds(loadGuestSavedVideoIds());
+          setWatchHistory(loadGuestWatchHistory(videos));
         }
       })
       .catch(() => {});
@@ -490,12 +517,19 @@ export default function App() {
 
   const handleRequestPlayVideo = (vid: KingdomVideo | null | undefined) => {
     if (!vid) return;
-    if (!currentUser) {
-      setPendingVideoToPlay(vid);
-      setShowAuthModal(true);
-      return;
-    }
     setActiveVideo(vid);
+    const isLive = Boolean(vid.is_live_now && vid.live_broadcast_content === 'live');
+    if (!isLive && (!currentUser || !authToken)) {
+      const existingProgress =
+        watchHistory.find((w) => w.video_id === vid.id)?.progress_seconds || 0;
+      const updated = upsertGuestWatchHistory(
+        vid,
+        existingProgress,
+        vid.duration_seconds || 0,
+        videos
+      );
+      setWatchHistory(updated);
+    }
   };
 
   useEffect(() => {
@@ -534,7 +568,7 @@ export default function App() {
       // Ignore URL cleanup error
     }
     handleRequestPlayVideo(matched);
-  }, [videos, activeLiveStreams, currentUser]);
+  }, [videos, activeLiveStreams]);
 
   // Real-time online presence heartbeat across tabs and devices
   useEffect(() => {
@@ -633,34 +667,51 @@ export default function App() {
     setCurrentUser(user);
     setShowAuthModal(false);
     fetchCatalog(token);
-
-    if (pendingVideoToPlay) {
-      setActiveVideo(pendingVideoToPlay);
-      setPendingVideoToPlay(null);
-    }
   };
 
   const handleLogout = async () => {
     await logoutUser(authToken);
     setAuthToken(null);
     setCurrentUser(null);
-    setWatchHistory([]);
-    setSavedVideoIds([]);
-    setPendingVideoToPlay(null);
+    setWatchHistory(loadGuestWatchHistory(videos));
+    setSavedVideoIds(loadGuestSavedVideoIds());
     setShowAuthModal(false);
     if (activeView === 'admin') setActiveView('streaming');
   };
 
+  const showQuickToast = (message: string) => {
+    setDataSaverToast(message);
+    if (dataSaverToastTimerRef.current) {
+      window.clearTimeout(dataSaverToastTimerRef.current);
+    }
+    dataSaverToastTimerRef.current = window.setTimeout(() => {
+      setDataSaverToast(null);
+    }, 2600);
+  };
+
   const handleToggleSaveVideo = async (videoId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const targetVideo =
+      (activeVideo && activeVideo.id === videoId ? activeVideo : null) ||
+      videos.find((v) => v.id === videoId) ||
+      activeLiveStreams.find((v) => v.id === videoId) ||
+      null;
+
     if (!currentUser || !authToken) {
-      setShowAuthModal(true);
+      const { nextIds, added } = toggleGuestSavedVideo(videoId, targetVideo);
+      setSavedVideoIds(nextIds);
+      showQuickToast(
+        added ? 'Saved to Watchlist on this device' : 'Removed from Watchlist'
+      );
       return;
     }
-    const nextSaved = savedVideoIds.includes(videoId)
+
+    const wasSaved = savedVideoIds.includes(videoId);
+    const nextSaved = wasSaved
       ? savedVideoIds.filter((id) => id !== videoId)
       : [...savedVideoIds, videoId];
     setSavedVideoIds(nextSaved);
+    showQuickToast(wasSaved ? 'Removed from Watchlist' : 'Saved to your Watchlist');
     try {
       localStorage.setItem(`kingdom_plus_saved_${currentUser.id}`, JSON.stringify(nextSaved));
     } catch {
@@ -710,7 +761,46 @@ export default function App() {
     progressSeconds: number,
     durationSeconds: number
   ) => {
-    if (!currentUser || !authToken) return;
+    const targetVideo =
+      (activeVideo && activeVideo.id === videoId ? activeVideo : null) ||
+      videos.find((v) => v.id === videoId) ||
+      null;
+
+    if (!currentUser || !authToken) {
+      if (targetVideo) {
+        const updated = upsertGuestWatchHistory(
+          targetVideo,
+          progressSeconds,
+          durationSeconds,
+          videos
+        );
+        setWatchHistory(updated);
+      }
+      return;
+    }
+
+    if (targetVideo) {
+      setWatchHistory((prev) => {
+        const existing = prev.find((w) => w.video_id === videoId);
+        const effDuration =
+          durationSeconds > 0
+            ? Math.round(durationSeconds)
+            : existing?.duration_seconds || targetVideo.duration_seconds || 0;
+        const effProgress = Math.round(progressSeconds);
+        const nextEntry: WatchHistoryEntry = {
+          id: existing?.id || `wh-${videoId}`,
+          user_id: currentUser.id,
+          video_id: videoId,
+          progress_seconds: effProgress,
+          duration_seconds: effDuration,
+          completed: effDuration > 0 && effProgress / effDuration >= 0.92,
+          last_watched_at: new Date().toISOString(),
+          video: targetVideo,
+        };
+        return [nextEntry, ...prev.filter((w) => w.video_id !== videoId)].slice(0, 20);
+      });
+    }
+
     await fetch('/api/user/watch-progress', {
       method: 'POST',
       headers: {
@@ -934,10 +1024,37 @@ export default function App() {
     };
   }, [streamingVideos]);
 
-  const savedVideosList = useMemo(
-    () => videos.filter((v) => savedVideoIds.includes(v.id)),
-    [videos, savedVideoIds]
-  );
+  const featuredChristianMovies = useMemo(() => {
+    return [...videos]
+      .filter(
+        (v) =>
+          v.is_official_verified &&
+          (movieCategorySlugs.has(v.primary_category_slug) ||
+            v.channel_type === 'movie_studio' ||
+            v.channel_type === 'animation_studio')
+      )
+      .sort((a, b) => b.trending_score - a.trending_score)
+      .slice(0, 4);
+  }, [videos, movieCategorySlugs]);
+
+  const savedVideosList = useMemo(() => {
+    const byId = new Map<string, KingdomVideo>();
+    const guestMap = loadGuestSavedVideosMap();
+    for (const [id, vid] of Object.entries(guestMap)) {
+      if (vid && typeof vid.id === 'string') {
+        byId.set(id, vid);
+      }
+    }
+    for (const v of videos) {
+      byId.set(v.id, v);
+    }
+    for (const liveVid of activeLiveStreams) {
+      byId.set(liveVid.id, liveVid);
+    }
+    return savedVideoIds
+      .map((id) => byId.get(id))
+      .filter((v): v is KingdomVideo => Boolean(v));
+  }, [videos, activeLiveStreams, savedVideoIds]);
 
   // ==========================================================================
   // 7-MODE VIDEO RANKING SYSTEM + RECENCY WINDOW FILTER
@@ -1478,13 +1595,25 @@ export default function App() {
                 onActiveLiveStreamsChange={setActiveLiveStreams}
               />
 
-              {/* 2. CONTINUE WATCHING (If member has active progress) */}
+              {/* 2. CONTINUE WATCHING (Works automatically for both Guests & Signed-In Members) */}
               {watchHistory.length > 0 && (
                 <section className="flex flex-col gap-3.5">
-                  <div className="flex items-center justify-between">
-                    <h2 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
-                      Continue Watching
-                    </h2>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-5 h-5 text-amber-400 shrink-0" />
+                      <h2 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
+                        Continue Watching
+                      </h2>
+                    </div>
+                    {!currentUser && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAuthModal(true)}
+                        className="text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+                      >
+                        Sync across devices →
+                      </button>
+                    )}
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
                     {watchHistory.slice(0, 4).map(
@@ -1498,7 +1627,12 @@ export default function App() {
                             onToggleSave={handleToggleSaveVideo}
                             watchProgressSeconds={entry.progress_seconds}
                             watchDurationSeconds={entry.duration_seconds}
-                            onSelectChannel={openChannelCatalog}
+                            onSelectChannel={
+                              entry.video.channel_type === 'movie_studio' ||
+                              entry.video.channel_type === 'animation_studio'
+                                ? () => switchView('movies')
+                                : openChannelCatalog
+                            }
                           />
                         )
                     )}
@@ -1506,7 +1640,63 @@ export default function App() {
                 </section>
               )}
 
-              {/* 3. BROWSE ALL 8 CATEGORIES (Where Sermons, Worship, Gospel Music, Marriage, Christian Living & Conferences live) */}
+              {/* 2B. SAVED WATCHLIST (Works automatically for both Guests & Signed-In Members) */}
+              {savedVideosList.length > 0 && (
+                <section className="flex flex-col gap-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Bookmark className="w-5 h-5 text-amber-400 shrink-0" />
+                      <h2 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
+                        Your Watchlist ({savedVideosList.length})
+                      </h2>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {!currentUser && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAuthModal(true)}
+                          className="text-xs font-medium text-zinc-400 hover:text-amber-300 transition-colors hidden sm:inline"
+                        >
+                          Sign in to cloud sync
+                        </button>
+                      )}
+                      {savedVideosList.length > 4 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllSavedWatchlist((prev) => !prev)}
+                          className="text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors"
+                        >
+                          {showAllSavedWatchlist
+                            ? 'Show Less'
+                            : `View All (${savedVideosList.length}) →`}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    {(showAllSavedWatchlist
+                      ? savedVideosList
+                      : savedVideosList.slice(0, 4)
+                    ).map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        onSelect={handleRequestPlayVideo}
+                        isSaved={savedVideoIds.includes(video.id)}
+                        onToggleSave={handleToggleSaveVideo}
+                        onSelectChannel={
+                          video.channel_type === 'movie_studio' ||
+                          video.channel_type === 'animation_studio'
+                            ? () => switchView('movies')
+                            : openChannelCatalog
+                        }
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* 3. BROWSE ALL 8 CATEGORIES */}
               <div className="p-4 sm:p-5 rounded-2xl bg-[#121215] border border-zinc-800/90 flex flex-col gap-3.5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <h2 className="text-base sm:text-lg font-bold text-zinc-100">
@@ -1563,6 +1753,114 @@ export default function App() {
                   })}
                 </div>
               </div>
+
+              {/* 3B. TRENDING SERMONS & TEACHINGS (Instant Playable Homepage Row) */}
+              {homepageCollections.sermonsAndTeachings.length > 0 && (
+                <section className="flex flex-col gap-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
+                        Trending Sermons &amp; Teachings
+                      </h2>
+                      <p className="text-xs text-zinc-400">
+                        Life-transforming messages and Bible teachings from anointed ministers
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openCategoryExplorer('sermons-teachings')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <span>View All Sermons</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    {homepageCollections.sermonsAndTeachings.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        onSelect={handleRequestPlayVideo}
+                        isSaved={savedVideoIds.includes(video.id)}
+                        onToggleSave={handleToggleSaveVideo}
+                        onSelectChannel={openChannelCatalog}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* 3C. WORSHIP & PRAISE SESSIONS (Instant Playable Homepage Row) */}
+              {homepageCollections.worshipAndPraise.length > 0 && (
+                <section className="flex flex-col gap-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
+                        Worship &amp; Praise
+                      </h2>
+                      <p className="text-xs text-zinc-400">
+                        Spirit-filled worship sessions, prophetic praise, and gospel anthems
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openCategoryExplorer('worship-praise')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <span>View All Worship</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    {homepageCollections.worshipAndPraise.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        onSelect={handleRequestPlayVideo}
+                        isSaved={savedVideoIds.includes(video.id)}
+                        onToggleSave={handleToggleSaveVideo}
+                        onSelectChannel={openChannelCatalog}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* 3D. FEATURED CHRISTIAN MOVIES & FAITH DRAMA (Instant Playable Homepage Row) */}
+              {featuredChristianMovies.length > 0 && (
+                <section className="flex flex-col gap-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
+                        Featured Christian Movies
+                      </h2>
+                      <p className="text-xs text-zinc-400">
+                        Full-length Nigerian &amp; global Christian movies, Mount Zion faith cinema, and Bible stories
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => switchView('movies')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <span>Explore All Movies</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    {featuredChristianMovies.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        onSelect={handleRequestPlayVideo}
+                        isSaved={savedVideoIds.includes(video.id)}
+                        onToggleSave={handleToggleSaveVideo}
+                        onSelectChannel={() => switchView('movies')}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
 
               {/* 4. UNLIMITED GLOBAL CHRISTIAN & GOSPEL DISCOVERY SEARCH */}
               <GlobalChristianSearchSection
@@ -2217,10 +2515,8 @@ export default function App() {
           categories={eightMainCategories}
           savedVideos={savedVideosList}
           watchHistory={watchHistory}
-          pendingVideoTitle={pendingVideoToPlay?.title || null}
           onClose={() => {
             setShowAuthModal(false);
-            setPendingVideoToPlay(null);
           }}
           onAuthSuccess={handleAuthSuccess}
           onLogout={handleLogout}

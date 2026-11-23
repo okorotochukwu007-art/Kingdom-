@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Gauge, LogOut, Play, Shield, User, X } from 'lucide-react';
+import { Gauge, LogOut, Shield, User, X } from 'lucide-react';
 import { ContentCategory, KingdomVideo, UserProfile, WatchHistoryEntry } from '../types/kingdom.ts';
 import { VideoCard } from './VideoCard.tsx';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
@@ -18,7 +18,6 @@ interface AuthAndProfileModalProps {
   categories: ContentCategory[];
   savedVideos: KingdomVideo[];
   watchHistory: WatchHistoryEntry[];
-  pendingVideoTitle?: string | null;
   onClose: () => void;
   onAuthSuccess: (token: string, user: UserProfile) => void;
   onLogout: () => void;
@@ -33,7 +32,6 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
   categories,
   savedVideos,
   watchHistory,
-  pendingVideoTitle,
   onClose,
   onAuthSuccess,
   onLogout,
@@ -140,11 +138,7 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
             <span className="font-display text-xl font-semibold text-amber-400">KINGDOM+</span>
             <span className="text-zinc-600">·</span>
             <span className="text-sm font-medium text-zinc-200">
-              {currentUser
-                ? 'Member Sanctuary & Watchlist'
-                : pendingVideoTitle
-                ? 'Sign Up to Watch Video'
-                : 'Member Account Access'}
+              {currentUser ? 'Member Sanctuary & Watchlist' : 'Member Account & Cloud Sync'}
             </span>
           </div>
           <button
@@ -158,21 +152,9 @@ export const AuthAndProfileModal: React.FC<AuthAndProfileModalProps> = ({
 
         {!currentUser ? (
           <form onSubmit={handleAuthSubmit} className="max-w-md mx-auto flex flex-col gap-4 py-2">
-            {pendingVideoTitle && (
-              <div className="p-3.5 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
-                  <Play className="w-4 h-4 fill-current" />
-                </div>
-                <div className="text-xs">
-                  <span className="font-semibold text-amber-300 block line-clamp-1">
-                    Sign up to play: &ldquo;{pendingVideoTitle}&rdquo;
-                  </span>
-                  <p className="text-zinc-300 mt-1">
-                    Free sanctuary account required before streaming Christian movies, sermons, and worship.
-                  </p>
-                </div>
-              </div>
-            )}
+            <p className="text-xs text-zinc-400 text-center">
+              Watching is always free with no sign-in required. Sign in or create a free account to post comments, join community chat, and sync your watchlist across devices.
+            </p>
 
             <div className="flex items-center gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-lg">
               <button
