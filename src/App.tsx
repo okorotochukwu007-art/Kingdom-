@@ -32,6 +32,7 @@ import { LiveSpecialBroadcastsView } from './components/LiveSpecialBroadcastsVie
 import { GlobalChristianSearchSection } from './components/GlobalChristianSearchSection.tsx';
 import { VideoCard } from './components/VideoCard.tsx';
 import { WorshipPraiseSanctuaryView } from './components/WorshipPraiseSanctuaryView.tsx';
+import { NonStopWorshipAudioStrip } from './components/NonStopWorshipAudioStrip.tsx';
 import { YouTubePlayerModal } from './components/YouTubePlayerModal.tsx';
 import { PWAInstallButton } from './components/PWAInstallButton.tsx';
 import { getActiveUserSession, logoutUser } from './utils/authService.ts';
@@ -96,16 +97,42 @@ type RankingMode =
 
 type TimeWindow = 'all' | '24h' | '7d' | '30d' | '90d';
 
-const EIGHT_MAIN_CATEGORY_SLUGS = [
-  'sermons-teachings',
-  'gospel-music',
-  'worship-praise',
-  'prayer-spiritual-warfare',
-  'marriage-relationships',
-  'christian-living',
-  'conferences-events',
-  'live-special-broadcasts',
+const THREE_MAIN_CATEGORIES = [
+  { id: 'cat-music', slug: 'music', name: 'Music', description: 'Gospel songs, worship & praise', display_order: 1, is_active: true },
+  { id: 'cat-sermons', slug: 'sermons', name: 'Sermons & Teachings', description: 'Life-transforming sermons, prayers & live broadcasts', display_order: 2, is_active: true },
+  { id: 'cat-marriage', slug: 'marriage-relationships', name: 'Marriage & Relationships', description: 'Biblical wisdom on courtship, marriage & family', display_order: 3, is_active: true },
 ] as const;
+
+function matchesThreeCategorySlug(v: KingdomVideo, slug: string): boolean {
+  if (slug === 'all') return true;
+  if (slug === 'music') {
+    return (
+      v.primary_category_slug === 'gospel-music' ||
+      v.primary_category_slug === 'worship-praise' ||
+      v.secondary_category_slugs.includes('gospel-music') ||
+      v.secondary_category_slugs.includes('worship-praise')
+    );
+  }
+  if (slug === 'sermons') {
+    return (
+      v.primary_category_slug === 'sermons-teachings' ||
+      v.primary_category_slug === 'prayer-spiritual-warfare' ||
+      v.primary_category_slug === 'christian-living' ||
+      v.primary_category_slug === 'conferences-events' ||
+      v.primary_category_slug === 'live-special-broadcasts' ||
+      v.secondary_category_slugs.some((s) =>
+        ['sermons-teachings', 'prayer-spiritual-warfare', 'christian-living', 'conferences-events', 'live-special-broadcasts'].includes(s)
+      )
+    );
+  }
+  if (slug === 'marriage-relationships') {
+    return (
+      v.primary_category_slug === 'marriage-relationships' ||
+      v.secondary_category_slugs.includes('marriage-relationships')
+    );
+  }
+  return v.primary_category_slug === slug || v.secondary_category_slugs.includes(slug);
+}
 
 const ROUTE_SEO_DESCRIPTORS: Record<string, { title: string; description: string }> = {
   streaming: {
@@ -827,15 +854,17 @@ export default function App() {
     [categories]
   );
 
-  // The 8 Approved Main Streaming Categories
   const eightMainCategories = useMemo(() => {
-    const slugOrder = new Map<string, number>(
-      EIGHT_MAIN_CATEGORY_SLUGS.map((slug, idx) => [slug, idx])
-    );
-    return categories
-      .filter((c) => slugOrder.has(c.slug))
-      .sort((a, b) => (slugOrder.get(a.slug) ?? 99) - (slugOrder.get(b.slug) ?? 99));
-  }, [categories]);
+    return THREE_MAIN_CATEGORIES.map((c) => ({
+      id: c.id,
+      slug: c.slug,
+      name: c.name,
+      description: c.description,
+      display_order: c.display_order,
+      is_active: c.is_active,
+      section: 'streaming' as const,
+    }));
+  }, []);
 
   const streamingVideos = useMemo(
     () =>
@@ -849,24 +878,20 @@ export default function App() {
     [videos, movieCategorySlugs]
   );
 
-  // Precompute video counts for the 8 Main Categories once per catalog change
   const categoryCountsMap = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const cat of eightMainCategories) {
+    for (const cat of THREE_MAIN_CATEGORIES) {
       counts.set(cat.slug, 0);
     }
     for (const v of streamingVideos) {
-      if (counts.has(v.primary_category_slug)) {
-        counts.set(v.primary_category_slug, (counts.get(v.primary_category_slug) || 0) + 1);
-      }
-      for (const sec of v.secondary_category_slugs) {
-        if (sec !== v.primary_category_slug && counts.has(sec)) {
-          counts.set(sec, (counts.get(sec) || 0) + 1);
+      for (const cat of THREE_MAIN_CATEGORIES) {
+        if (matchesThreeCategorySlug(v, cat.slug)) {
+          counts.set(cat.slug, (counts.get(cat.slug) || 0) + 1);
         }
       }
     }
     return counts;
-  }, [eightMainCategories, streamingVideos]);
+  }, [streamingVideos]);
 
   // Consolidated Minister Profiles for Dedicated Minister Search & Explore Ministers Page (Sections 5 & 6)
   const ministerProfiles = useMemo(
@@ -1584,6 +1609,18 @@ export default function App() {
                 (All other videos live strictly inside their fitting Categories)
             ================================================================ */}
             <section className="max-w-[1440px] w-full mx-auto px-4 sm:px-8 flex flex-col gap-6 sm:gap-8">
+              {/* 0. NON-STOP WORSHIP & PRAISE AUDIO MIX (Mobile-first, 1-tap play + mood pills + swipeable artists + external song search) */}
+              <NonStopWorshipAudioStrip
+                videos={videos}
+                channels={channels}
+                onSelectVideo={handleRequestPlayVideo}
+                onOpenWorshipSanctuary={() => openCategoryExplorer('music')}
+                onOpenCategorySearch={(query, slug) => {
+                  setSelectedCategorySlug(slug);
+                  switchView('categories');
+                }}
+              />
+
               {/* 1. LIVE SERVICE COUNTDOWN, DAILY PRAYER SCHEDULE & LIVE BROADCASTS */}
               <LiveSpecialBroadcastsView
                 videos={streamingVideos}
@@ -1726,10 +1763,7 @@ export default function App() {
 
                 <div className="flex sm:grid sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-8 overflow-x-auto no-scrollbar gap-2.5 pb-1 sm:pb-0 snap-x snap-mandatory">
                   {eightMainCategories.map((cat, index) => {
-                    const count =
-                      cat.slug === 'live-special-broadcasts'
-                        ? activeLiveStreams.length
-                        : categoryCountsMap.get(cat.slug) || 0;
+                    const count = categoryCountsMap.get(cat.slug) || 0;
                     return (
                       <button
                         key={cat.id}
@@ -1739,11 +1773,7 @@ export default function App() {
                       >
                         <div className="flex items-center justify-between text-[10px] font-mono tabular-nums text-zinc-500 group-hover:text-amber-400">
                           <span>0{index + 1}</span>
-                          <span>
-                            {cat.slug === 'live-special-broadcasts'
-                              ? `${count} live now`
-                              : `${count} videos`}
-                          </span>
+                          <span>{count} videos</span>
                         </div>
                         <div className="text-xs font-semibold text-zinc-100 group-hover:text-amber-300 leading-snug line-clamp-2">
                           {cat.name}
@@ -1931,10 +1961,7 @@ export default function App() {
                 All Categories ({streamingVideos.length})
               </button>
               {eightMainCategories.map((cat) => {
-                const count =
-                  cat.slug === 'live-special-broadcasts'
-                    ? activeLiveStreams.length
-                    : categoryCountsMap.get(cat.slug) || 0;
+                const count = categoryCountsMap.get(cat.slug) || 0;
                 return (
                   <button
                     key={cat.id}
@@ -2017,251 +2044,11 @@ export default function App() {
                 .filter(
                   (v) =>
                     selectedCategorySlug === 'all' ||
-                    v.primary_category_slug === selectedCategorySlug ||
-                    v.secondary_category_slugs.includes(selectedCategorySlug)
+                    matchesThreeCategorySlug(v, selectedCategorySlug)
                 )
                 .sort((a, b) => b.trending_score - a.trending_score);
 
-              if (selectedCategorySlug === 'marriage-relationships') {
-                const featuredMarriageTeachers = channels.filter(
-                  (ch) =>
-                    ch.is_featured_marriage_teacher ||
-                    ch.supported_categories?.includes('marriage-relationships')
-                );
-                const filteredTeachers = featuredMarriageTeachers.filter((ch) => {
-                  if (marriageSpeakerGenderFilter === 'male') return ch.speaker_gender === 'male';
-                  if (marriageSpeakerGenderFilter === 'female') return ch.speaker_gender === 'female';
-                  return true;
-                });
 
-                const marriageFilteredVideos = categoryMatches.filter((v) => {
-                  if (selectedMarriageTeacherId && v.channel_id !== selectedMarriageTeacherId) {
-                    return false;
-                  }
-                  if (marriageSpeakerGenderFilter === 'male') {
-                    return (
-                      v.speaker_gender === 'male' ||
-                      v.marriage_collections?.includes('men-and-relationships')
-                    );
-                  }
-                  if (marriageSpeakerGenderFilter === 'female') {
-                    return (
-                      v.speaker_gender === 'female' ||
-                      v.marriage_collections?.includes('women-and-relationships')
-                    );
-                  }
-                  return true;
-                });
-
-                const activeCollections = marriageCollections
-                  .filter((col) => col.is_active)
-                  .sort((a, b) => a.display_order - b.display_order);
-
-                return (
-                  <div className="flex flex-col gap-6 sm:gap-8">
-                    <div className="p-4 sm:p-6 rounded-2xl bg-[#121215] border border-zinc-800/90 flex flex-col gap-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800/80 pb-3.5">
-                        <div className="flex items-baseline gap-2.5">
-                          <h2 className="font-display text-xl sm:text-2xl font-semibold text-zinc-50">
-                            Marriage &amp; Relationships
-                          </h2>
-                          <span className="text-xs font-mono tabular-nums text-amber-400">
-                            {marriageFilteredVideos.length} Teachings
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
-                          {[
-                            { id: 'all', label: 'All Voices' },
-                            { id: 'female', label: 'Female Speakers' },
-                            { id: 'male', label: 'Male Speakers' },
-                          ].map((gf) => (
-                            <button
-                              key={gf.id}
-                              type="button"
-                              onClick={() => {
-                                setMarriageSpeakerGenderFilter(gf.id as any);
-                                setSelectedMarriageTeacherId(null);
-                              }}
-                              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
-                                marriageSpeakerGenderFilter === gf.id
-                                  ? 'bg-amber-500 text-zinc-950 font-semibold'
-                                  : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800 border border-zinc-800'
-                              }`}
-                            >
-                              {gf.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedMarriageTeacherId(null)}
-                          className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors whitespace-nowrap shrink-0 min-h-[44px] ${
-                            selectedMarriageTeacherId === null
-                              ? 'bg-amber-500/15 border-amber-500 text-amber-300 font-semibold'
-                              : 'bg-zinc-900/80 border-zinc-800 text-zinc-300 hover:border-zinc-700'
-                          }`}
-                        >
-                          All Teachers ({filteredTeachers.length})
-                        </button>
-                        {filteredTeachers.map((teacher) => {
-                          const teacherMarriageCount = categoryMatches.filter(
-                            (v) => v.channel_id === teacher.id
-                          ).length;
-                          const isSelected = selectedMarriageTeacherId === teacher.id;
-                          return (
-                            <button
-                              key={teacher.id}
-                              type="button"
-                              onClick={() =>
-                                setSelectedMarriageTeacherId(isSelected ? null : teacher.id)
-                              }
-                              className={`px-3 py-2 rounded-xl border transition-colors flex items-center gap-2 whitespace-nowrap shrink-0 min-h-[44px] ${
-                                isSelected
-                                  ? 'bg-amber-500/15 border-amber-500 text-zinc-50'
-                                  : 'bg-zinc-900/70 border-zinc-800/90 hover:border-zinc-700 text-zinc-200'
-                              }`}
-                            >
-                              <img
-                                src={getOptimizedAvatarUrl(teacher.avatar_url, isDataSaverActive)}
-                                alt={teacher.title}
-                                loading="lazy"
-                                decoding="async"
-                                referrerPolicy="no-referrer"
-                                className="w-7 h-7 rounded-full object-cover bg-zinc-800 shrink-0"
-                              />
-                              <div className="text-left">
-                                <div className="text-xs font-semibold text-zinc-100">
-                                  {(teacher.speaker_name || teacher.title).split('(')[0].trim()}
-                                </div>
-                                <div className="text-[10px] text-zinc-400">
-                                  {teacherMarriageCount} videos
-                                </div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5 lg:flex-wrap pt-2 border-t border-zinc-800/80">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedMarriageCollectionSlug('all')}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                            selectedMarriageCollectionSlug === 'all'
-                              ? 'bg-zinc-100 text-zinc-950 font-semibold'
-                              : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                          }`}
-                        >
-                          All Topics ({marriageFilteredVideos.length})
-                        </button>
-                        {activeCollections.map((col) => {
-                          const colCount = marriageFilteredVideos.filter((v) =>
-                            v.marriage_collections?.includes(col.slug)
-                          ).length;
-                          return (
-                            <button
-                              key={col.slug}
-                              type="button"
-                              onClick={() => setSelectedMarriageCollectionSlug(col.slug)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                                selectedMarriageCollectionSlug === col.slug
-                                  ? 'bg-amber-500 text-zinc-950 font-semibold'
-                                  : 'bg-zinc-900 text-zinc-300 hover:text-zinc-100 border border-zinc-800'
-                              }`}
-                            >
-                              {col.name} ({colCount})
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {selectedMarriageCollectionSlug !== 'all' ? (
-                      (() => {
-                        const activeCol = activeCollections.find(
-                          (c) => c.slug === selectedMarriageCollectionSlug
-                        );
-                        const colVideos = marriageFilteredVideos.filter((v) =>
-                          v.marriage_collections?.includes(selectedMarriageCollectionSlug)
-                        );
-                        return (
-                          <div className="flex flex-col gap-4">
-                            <div className="flex items-center justify-between">
-                              <h3 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
-                                {activeCol?.name} ({colVideos.length})
-                              </h3>
-                              <button
-                                type="button"
-                                onClick={() => setSelectedMarriageCollectionSlug('all')}
-                                className="text-xs text-amber-400 hover:underline"
-                              >
-                                Show All Topics
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-                              {colVideos.map((video) => (
-                                <VideoCard
-                                  key={video.id}
-                                  video={video}
-                                  onSelect={handleRequestPlayVideo}
-                                  isSaved={savedVideoIds.includes(video.id)}
-                                  onToggleSave={handleToggleSaveVideo}
-                                  onSelectChannel={openChannelCatalog}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })()
-                    ) : (
-                      <div className="flex flex-col gap-8 sm:gap-10">
-                        {activeCollections.map((col) => {
-                          const colVideos = marriageFilteredVideos.filter((v) =>
-                            v.marriage_collections?.includes(col.slug)
-                          );
-                          if (colVideos.length === 0) return null;
-                          return (
-                            <section key={col.slug} className="flex flex-col gap-3.5">
-                              <div className="flex items-center justify-between">
-                                <h3 className="font-display text-lg sm:text-2xl font-semibold text-zinc-50">
-                                  {col.name}{' '}
-                                  <span className="text-sm font-mono text-zinc-400 font-normal">
-                                    ({colVideos.length})
-                                  </span>
-                                </h3>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedMarriageCollectionSlug(col.slug)}
-                                  className="inline-flex items-center gap-1 text-xs font-medium text-zinc-400 hover:text-amber-400 transition-colors"
-                                >
-                                  <span>See All</span>
-                                  <ChevronRight className="w-4 h-4" />
-                                </button>
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-                                {colVideos.slice(0, 4).map((video) => (
-                                  <VideoCard
-                                    key={`${col.slug}-${video.id}`}
-                                    video={video}
-                                    onSelect={handleRequestPlayVideo}
-                                    isSaved={savedVideoIds.includes(video.id)}
-                                    onToggleSave={handleToggleSaveVideo}
-                                    onSelectChannel={openChannelCatalog}
-                                  />
-                                ))}
-                              </div>
-                            </section>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              }
 
               const visibleMatches = categoryMatches.slice(0, visibleCategoryCount);
               const hasMoreCategoryVideos = categoryMatches.length > visibleMatches.length;

@@ -21,6 +21,7 @@ import {
   RotateCw,
   Send,
   Share2,
+  SkipBack,
   SkipForward,
   Subtitles,
   Volume2,
@@ -171,6 +172,39 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
 
   const relatedVideos = React.useMemo(() => {
+    const isMusicOrWorship =
+      video.primary_category_slug === 'worship-praise' ||
+      video.primary_category_slug === 'gospel-music' ||
+      video.channel_type === 'artist';
+
+    if (isMusicOrWorship) {
+      const musicMatches = allVideos.filter(
+        (v) =>
+          v.id !== video.id &&
+          v.is_official_verified &&
+          (v.primary_category_slug === 'worship-praise' ||
+            v.primary_category_slug === 'gospel-music' ||
+            v.channel_type === 'artist' ||
+            v.secondary_category_slugs.includes('worship-praise')) &&
+          !/\b(sermon|preaching|teaching|nsppd|hallelujah challenge|covenant hour)\b/i.test(v.title)
+      );
+
+      // Prioritize long play mixes (45 mins / 2700s and above) first, then sort by view count
+      musicMatches.sort((a, b) => {
+        const aLong = (a.duration_seconds || 0) >= 2700 ? 1 : 0;
+        const bLong = (b.duration_seconds || 0) >= 2700 ? 1 : 0;
+        if (aLong !== bLong) return bLong - aLong;
+        return b.view_count - a.view_count;
+      });
+
+      if (musicMatches.length >= 6) return musicMatches.slice(0, 15);
+      const seen = new Set(musicMatches.map((v) => v.id));
+      const fallback = allVideos.filter(
+        (v) => v.id !== video.id && !seen.has(v.id) && v.is_official_verified
+      );
+      return [...musicMatches, ...fallback].slice(0, 15);
+    }
+
     const primaryMatches = allVideos.filter(
       (v) =>
         v.id !== video.id &&
@@ -180,7 +214,7 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     const seenIds = new Set(primaryMatches.map((v) => v.id));
     const extras = allVideos.filter((v) => v.id !== video.id && !seenIds.has(v.id));
     return [...primaryMatches, ...extras].slice(0, 6);
-  }, [allVideos, video.id, video.primary_category_slug, video.channel_id]);
+  }, [allVideos, video.id, video.primary_category_slug, video.channel_id, video.channel_type]);
 
   const { isDataSaverActive } = useDataSaver();
   const isDataSaverActiveRef = useRef(isDataSaverActive);
@@ -706,6 +740,11 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
             }
             setCurrentTime(cur);
             if (dur > 0) setDuration(dur);
+            if (dur > 0 && cur >= dur - 1.5) {
+              if (autoPlayNextRef.current && nextVideoRef.current) {
+                onSelectVideoRef.current(nextVideoRef.current);
+              }
+            }
             const now = Date.now();
             const syncIntervalMs = isDataSaverActiveRef.current ? 30000 : 10000;
             if (cur > 3 && dur > 0 && now - lastProgressSyncRef.current >= syncIntervalMs) {
@@ -1155,9 +1194,32 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
     } catch {}
   };
 
+  const playedHistoryRef = useRef<KingdomVideo[]>([]);
+
   const playNextRelated = () => {
+    if (video) {
+      playedHistoryRef.current.push(video);
+      if (playedHistoryRef.current.length > 25) {
+        playedHistoryRef.current.shift();
+      }
+    }
     if (relatedVideos.length > 0) {
       onSelectVideo(relatedVideos[0]);
+    } else if (allVideos.length > 0) {
+      const longMixes = allVideos.filter((v) => (v.duration_seconds || 0) >= 2700);
+      const pool = longMixes.length > 0 ? longMixes : allVideos;
+      const randomVid = pool[Math.floor(Math.random() * pool.length)];
+      onSelectVideo(randomVid);
+    }
+  };
+
+  const playPreviousRelated = () => {
+    const history = playedHistoryRef.current;
+    if (history.length > 0) {
+      const prev = history.pop();
+      if (prev) {
+        onSelectVideo(prev);
+      }
     }
   };
 
@@ -1891,11 +1953,36 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
 
                             <button
                               type="button"
+                              onClick={() => {
+                                playPreviousRelated();
+                                revealControlsTemporarily();
+                              }}
+                              className="w-11 h-11 rounded-full bg-black/70 backdrop-blur-md border border-zinc-700/80 text-zinc-100 flex items-center justify-center active:scale-95 transition-transform"
+                              title="Previous Track"
+                            >
+                              <SkipBack className="w-5 h-5" />
+                            </button>
+
+                            <button
+                              type="button"
                               onClick={togglePlayPause}
                               className="w-14 h-14 rounded-full bg-black/75 backdrop-blur-md border border-amber-500/60 text-amber-400 flex items-center justify-center shadow-xl active:scale-95 transition-transform"
                               aria-label="Pause Video"
                             >
                               <Pause className="w-6 h-6 fill-current" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                playNextRelated();
+                                revealControlsTemporarily();
+                              }}
+                              className="px-4 py-2.5 rounded-full bg-amber-500 hover:bg-amber-400 text-zinc-950 flex items-center gap-1.5 shadow-lg active:scale-95 transition-transform text-xs font-bold"
+                              title="Next Track"
+                            >
+                              <span>Next Song</span>
+                              <SkipForward className="w-4 h-4 fill-current" />
                             </button>
 
                             {!video.is_live_now && (
@@ -2199,16 +2286,15 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                             <RotateCw className="w-3.5 h-3.5" />
                           </button>
 
-                          {relatedVideos.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={playNextRelated}
-                              className="p-2 rounded-lg text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800/80 transition-colors"
-                              title={`Next: ${relatedVideos[0].title}`}
-                            >
-                              <SkipForward className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={playNextRelated}
+                            className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-semibold flex items-center gap-1 transition-colors"
+                            title={`Next: ${relatedVideos[0]?.title || 'Next Song'}`}
+                          >
+                            <span>Next</span>
+                            <SkipForward className="w-3 h-3" />
+                          </button>
                         </div>
 
                         <div className="flex items-center gap-1">
@@ -2314,6 +2400,26 @@ export const YouTubePlayerModal: React.FC<YouTubePlayerModalProps> = ({
                             <span>Play</span>
                           </>
                         )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={playPreviousRelated}
+                        className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
+                        title="Previous Track"
+                      >
+                        <SkipBack className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Prev</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={playNextRelated}
+                        className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs border border-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
+                        title="Next Track"
+                      >
+                        <SkipForward className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Next</span>
                       </button>
 
                       {!video.is_live_now && (

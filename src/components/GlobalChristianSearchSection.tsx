@@ -66,14 +66,9 @@ const QUICK_MOVIE_SEARCH_TOPICS = [
 
 const CATEGORY_SCOPES = [
   { id: 'all', label: 'All Christian Content' },
-  { id: 'sermons-teachings', label: 'Sermons & Teachings' },
-  { id: 'worship-praise', label: 'Worship & Praise' },
-  { id: 'gospel-music', label: 'Gospel Music' },
-  { id: 'prayer-spiritual-warfare', label: 'Prayer & Warfare' },
-  { id: 'christian-living', label: 'Christian Living' },
-  { id: 'marriage-relationships', label: 'Marriage & Family' },
-  { id: 'conferences-events', label: 'Conferences' },
-  { id: 'movies', label: 'Christian Movies' },
+  { id: 'music', label: 'Music' },
+  { id: 'sermons', label: 'Sermons & Teachings' },
+  { id: 'marriage-relationships', label: 'Marriage & Relationships' },
 ];
 
 const MOVIE_CATEGORY_SCOPES = [
@@ -207,6 +202,20 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
       .filter((v) => {
         const matchesScope =
           categoryScope === 'all' ||
+          (categoryScope === 'music' &&
+            (v.primary_category_slug === 'gospel-music' ||
+              v.primary_category_slug === 'worship-praise' ||
+              v.secondary_category_slugs.includes('gospel-music') ||
+              v.secondary_category_slugs.includes('worship-praise'))) ||
+          (categoryScope === 'sermons' &&
+            (v.primary_category_slug === 'sermons-teachings' ||
+              v.primary_category_slug === 'prayer-spiritual-warfare' ||
+              v.primary_category_slug === 'christian-living' ||
+              v.primary_category_slug === 'conferences-events' ||
+              v.primary_category_slug === 'live-special-broadcasts' ||
+              v.secondary_category_slugs.some((s) =>
+                ['sermons-teachings', 'prayer-spiritual-warfare', 'christian-living', 'conferences-events', 'live-special-broadcasts'].includes(s)
+              ))) ||
           v.primary_category_slug === categoryScope ||
           v.secondary_category_slugs.includes(categoryScope);
         if (!matchesScope) return false;
@@ -307,7 +316,7 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
     : QUICK_CHRISTIAN_SEARCH_TOPICS;
 
   return (
-    <section className="p-4 sm:p-6 rounded-2xl bg-gradient-to-br from-[#16151C] via-[#121215] to-[#09090B] border border-amber-500/30 flex flex-col gap-4 shadow-xl">
+    <section className="w-full flex flex-col gap-4 py-2">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center flex-wrap gap-2">
@@ -338,7 +347,7 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
       {/* Search Input Bar */}
       <form onSubmit={handleFormSubmit} className="flex flex-col sm:flex-row gap-2.5">
         <div className="relative flex-1">
-          <Search className="w-4 h-4 text-amber-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <Search className="w-5 h-5 text-amber-400 absolute left-4 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             value={query}
@@ -348,7 +357,7 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
                 ? 'Search any Christian movie or cartoon (Nigerian, International, Mount Zion, Bible stories)...'
                 : 'Search any Christian sermon, pastor, gospel artist, worship song, or Bible topic...'
             }
-            className="w-full pl-10 pr-9 py-3 rounded-xl bg-zinc-950/90 border border-zinc-700/90 text-xs sm:text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500"
+            className="w-full pl-12 pr-10 py-4 rounded-2xl bg-zinc-900 border-2 border-amber-500/60 text-sm sm:text-base text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-amber-400 shadow-[0_0_25px_rgba(245,158,11,0.25)]"
           />
           {query && (
             <button
@@ -408,30 +417,6 @@ export const GlobalChristianSearchSection: React.FC<GlobalChristianSearchSection
           </button>
         ))}
       </div>
-
-      {/* Quick Discovery Suggestion Chips */}
-      {!submittedQuery && !loadingGlobal && (
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
-          <span className="text-[11px] font-medium text-zinc-500 shrink-0 flex items-center gap-1">
-            <Flame className="w-3 h-3 text-amber-400" />
-            <span>Try searching:</span>
-          </span>
-          {activeQuickTopics.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => {
-                setQuery(item.label);
-                setCategoryScope(item.category);
-                executeGlobalSearch(item.label, item.category);
-              }}
-              className="px-2.5 py-1 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800/90 text-[11px] text-zinc-300 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
 
       {/* Christian Safety Guardrail Block Notice */}
       {blockedMessage && (
